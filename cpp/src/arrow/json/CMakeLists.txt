@@ -15,10 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-add_arrow_test(parser-test PREFIX "arrow-json")
+add_arrow_test(test
+               SOURCES
+               chunker_test.cc
+               converter_test.cc
+               parser_test.cc
+               reader_test.cc
+               PREFIX
+               "arrow-json")
 
-add_arrow_test(chunker-test PREFIX "arrow-json")
-
-add_arrow_benchmark(parser-benchmark PREFIX "arrow-json")
-
+add_arrow_benchmark(parser_benchmark PREFIX "arrow-json")
 arrow_install_all_headers("arrow/json")

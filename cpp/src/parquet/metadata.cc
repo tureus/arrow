@@ -19,21 +19,31 @@
 #include <ostream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/util/logging.h"
 
 #include "parquet/exception.h"
 #include "parquet/metadata.h"
-#include "parquet/schema-internal.h"
 #include "parquet/schema.h"
+#include "parquet/schema_internal.h"
 #include "parquet/statistics.h"
-#include "parquet/thrift.h"
+#include "parquet/thrift_internal.h"
 
+// ARROW-6096: The boost regex library must be used when compiling with gcc < 4.9
+#if defined(PARQUET_USE_BOOST_REGEX)
 #include <boost/regex.hpp>  // IWYU pragma: keep
+using ::boost::regex;
+using ::boost::regex_match;
+using ::boost::smatch;
+#else
+#include <regex>
+using ::std::regex;
+using ::std::regex_match;
+using ::std::smatch;
+#endif
 
 namespace parquet {
-
-class OutputStream;
 
 const ApplicationVersion& ApplicationVersion::PARQUET_251_FIXED_VERSION() {
   static ApplicationVersion version("parquet-mr", 1, 8, 0);
@@ -68,26 +78,26 @@ std::string ParquetVersionToString(ParquetVersion::type ver) {
 }
 
 template <typename DType>
-static std::shared_ptr<RowGroupStatistics> MakeTypedColumnStats(
+static std::shared_ptr<Statistics> MakeTypedColumnStats(
     const format::ColumnMetaData& metadata, const ColumnDescriptor* descr) {
   // If ColumnOrder is defined, return max_value and min_value
   if (descr->column_order().get_order() == ColumnOrder::TYPE_DEFINED_ORDER) {
-    return std::make_shared<TypedRowGroupStatistics<DType>>(
+    return MakeStatistics<DType>(
         descr, metadata.statistics.min_value, metadata.statistics.max_value,
         metadata.num_values - metadata.statistics.null_count,
         metadata.statistics.null_count, metadata.statistics.distinct_count,
         metadata.statistics.__isset.max_value || metadata.statistics.__isset.min_value);
   }
   // Default behavior
-  return std::make_shared<TypedRowGroupStatistics<DType>>(
+  return MakeStatistics<DType>(
       descr, metadata.statistics.min, metadata.statistics.max,
       metadata.num_values - metadata.statistics.null_count,
       metadata.statistics.null_count, metadata.statistics.distinct_count,
       metadata.statistics.__isset.max || metadata.statistics.__isset.min);
 }
 
-std::shared_ptr<RowGroupStatistics> MakeColumnStats(
-    const format::ColumnMetaData& meta_data, const ColumnDescriptor* descr) {
+std::shared_ptr<Statistics> MakeColumnStats(const format::ColumnMetaData& meta_data,
+                                            const ColumnDescriptor* descr) {
   switch (static_cast<Type::type>(meta_data.type)) {
     case Type::BOOLEAN:
       return MakeTypedColumnStats<BooleanType>(meta_data, descr);
@@ -105,6 +115,8 @@ std::shared_ptr<RowGroupStatistics> MakeColumnStats(
       return MakeTypedColumnStats<ByteArrayType>(meta_data, descr);
     case Type::FIXED_LEN_BYTE_ARRAY:
       return MakeTypedColumnStats<FLBAType>(meta_data, descr);
+    case Type::UNDEFINED:
+      break;
   }
   throw ParquetException("Can't decode page statistics for selected column type");
 }
@@ -140,9 +152,6 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
   // Check if statistics are set and are valid
   // 1) Must be set in the metadata
   // 2) Statistics must not be corrupted
-  // 3) parquet-mr and parquet-cpp write statistics by SIGNED order comparison.
-  //    The statistics are corrupted if the type requires UNSIGNED order comparison.
-  //    Eg: UTF8
   inline bool is_stats_set() const {
     DCHECK(writer_version_ != nullptr);
     // If the column statistics don't exist or column sort order is unknown
@@ -159,7 +168,7 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
                                                  descr_->sort_order());
   }
 
-  inline std::shared_ptr<RowGroupStatistics> statistics() const {
+  inline std::shared_ptr<Statistics> statistics() const {
     return is_stats_set() ? possible_stats_ : nullptr;
   }
 
@@ -196,7 +205,7 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
   }
 
  private:
-  mutable std::shared_ptr<RowGroupStatistics> possible_stats_;
+  mutable std::shared_ptr<Statistics> possible_stats_;
   std::vector<Encoding::type> encodings_;
   const format::ColumnChunk* column_;
   const ColumnDescriptor* descr_;
@@ -232,7 +241,7 @@ std::shared_ptr<schema::ColumnPath> ColumnChunkMetaData::path_in_schema() const 
   return impl_->path_in_schema();
 }
 
-std::shared_ptr<RowGroupStatistics> ColumnChunkMetaData::statistics() const {
+std::shared_ptr<Statistics> ColumnChunkMetaData::statistics() const {
   return impl_->statistics();
 }
 
@@ -368,7 +377,7 @@ class FileMetaData::FileMetaDataImpl {
 
   const ApplicationVersion& writer_version() const { return writer_version_; }
 
-  void WriteTo(OutputStream* dst) const {
+  void WriteTo(::arrow::io::OutputStream* dst) const {
     ThriftSerializer serializer;
     serializer.Serialize(metadata_.get(), dst);
   }
@@ -387,6 +396,28 @@ class FileMetaData::FileMetaDataImpl {
 
   std::shared_ptr<const KeyValueMetadata> key_value_metadata() const {
     return key_value_metadata_;
+  }
+
+  void set_file_path(const std::string& path) {
+    for (format::RowGroup& row_group : metadata_->row_groups) {
+      for (format::ColumnChunk& chunk : row_group.columns) {
+        chunk.__set_file_path(path);
+      }
+    }
+  }
+
+  format::RowGroup& row_group(int i) {
+    DCHECK_LT(i, num_row_groups());
+    return metadata_->row_groups[i];
+  }
+
+  void AppendRowGroups(const std::unique_ptr<FileMetaDataImpl>& other) {
+    format::RowGroup other_rg;
+    for (int i = 0; i < other->num_row_groups(); i++) {
+      other_rg = other->row_group(i);
+      metadata_->row_groups.push_back(other_rg);
+      metadata_->num_rows += other_rg.num_rows;
+    }
   }
 
  private:
@@ -486,23 +517,31 @@ std::shared_ptr<const KeyValueMetadata> FileMetaData::key_value_metadata() const
   return impl_->key_value_metadata();
 }
 
-void FileMetaData::WriteTo(OutputStream* dst) const { return impl_->WriteTo(dst); }
+void FileMetaData::set_file_path(const std::string& path) { impl_->set_file_path(path); }
+
+void FileMetaData::AppendRowGroups(const FileMetaData& other) {
+  impl_->AppendRowGroups(other.impl_);
+}
+
+void FileMetaData::WriteTo(::arrow::io::OutputStream* dst) const {
+  return impl_->WriteTo(dst);
+}
 
 ApplicationVersion::ApplicationVersion(const std::string& application, int major,
                                        int minor, int patch)
     : application_(application), version{major, minor, patch, "", "", ""} {}
 
 ApplicationVersion::ApplicationVersion(const std::string& created_by) {
-  boost::regex app_regex{ApplicationVersion::APPLICATION_FORMAT};
-  boost::regex ver_regex{ApplicationVersion::VERSION_FORMAT};
-  boost::smatch app_matches;
-  boost::smatch ver_matches;
+  regex app_regex{ApplicationVersion::APPLICATION_FORMAT};
+  regex ver_regex{ApplicationVersion::VERSION_FORMAT};
+  smatch app_matches;
+  smatch ver_matches;
 
   std::string created_by_lower = created_by;
   std::transform(created_by_lower.begin(), created_by_lower.end(),
                  created_by_lower.begin(), ::tolower);
 
-  bool app_success = boost::regex_match(created_by_lower, app_matches, app_regex);
+  bool app_success = regex_match(created_by_lower, app_matches, app_regex);
   bool ver_success = false;
   std::string version_str;
 
@@ -511,7 +550,7 @@ ApplicationVersion::ApplicationVersion(const std::string& created_by) {
     application_ = app_matches[1];
     version_str = app_matches[3];
     build_ = app_matches[4];
-    ver_success = boost::regex_match(version_str, ver_matches, ver_regex);
+    ver_success = regex_match(version_str, ver_matches, ver_regex);
   } else {
     application_ = "unknown";
   }
@@ -617,26 +656,8 @@ class ColumnChunkMetaDataBuilder::ColumnChunkMetaDataBuilderImpl {
   void set_file_path(const std::string& val) { column_chunk_->__set_file_path(val); }
 
   // column metadata
-  void SetStatistics(bool is_signed, const EncodedStatistics& val) {
-    format::Statistics stats;
-    stats.null_count = val.null_count;
-    stats.distinct_count = val.distinct_count;
-    stats.max_value = val.max();
-    stats.min_value = val.min();
-    stats.__isset.min_value = val.has_min;
-    stats.__isset.max_value = val.has_max;
-    stats.__isset.null_count = val.has_null_count;
-    stats.__isset.distinct_count = val.has_distinct_count;
-    // If the order is SIGNED, then the old min/max values must be set too.
-    // This for backward compatibility
-    if (is_signed) {
-      stats.max = val.max();
-      stats.min = val.min();
-      stats.__isset.min = val.has_min;
-      stats.__isset.max = val.has_max;
-    }
-
-    column_chunk_->meta_data.__set_statistics(stats);
+  void SetStatistics(const EncodedStatistics& val) {
+    column_chunk_->meta_data.__set_statistics(ToThrift(val));
   }
 
   void Finish(int64_t num_values, int64_t dictionary_page_offset,
@@ -677,7 +698,7 @@ class ColumnChunkMetaDataBuilder::ColumnChunkMetaDataBuilderImpl {
     column_chunk_->meta_data.__set_encodings(thrift_encodings);
   }
 
-  void WriteTo(OutputStream* sink) {
+  void WriteTo(::arrow::io::OutputStream* sink) {
     ThriftSerializer serializer;
     serializer.Serialize(column_chunk_, sink);
   }
@@ -742,47 +763,48 @@ void ColumnChunkMetaDataBuilder::Finish(int64_t num_values,
                 compressed_size, uncompressed_size, has_dictionary, dictionary_fallback);
 }
 
-void ColumnChunkMetaDataBuilder::WriteTo(OutputStream* sink) { impl_->WriteTo(sink); }
+void ColumnChunkMetaDataBuilder::WriteTo(::arrow::io::OutputStream* sink) {
+  impl_->WriteTo(sink);
+}
 
 const ColumnDescriptor* ColumnChunkMetaDataBuilder::descr() const {
   return impl_->descr();
 }
 
-void ColumnChunkMetaDataBuilder::SetStatistics(bool is_signed,
-                                               const EncodedStatistics& result) {
-  impl_->SetStatistics(is_signed, result);
+void ColumnChunkMetaDataBuilder::SetStatistics(const EncodedStatistics& result) {
+  impl_->SetStatistics(result);
 }
 
 class RowGroupMetaDataBuilder::RowGroupMetaDataBuilderImpl {
  public:
   explicit RowGroupMetaDataBuilderImpl(const std::shared_ptr<WriterProperties>& props,
                                        const SchemaDescriptor* schema, void* contents)
-      : properties_(props), schema_(schema), current_column_(0) {
+      : properties_(props), schema_(schema), next_column_(0) {
     row_group_ = reinterpret_cast<format::RowGroup*>(contents);
     InitializeColumns(schema->num_columns());
   }
 
   ColumnChunkMetaDataBuilder* NextColumnChunk() {
-    if (!(current_column_ < num_columns())) {
+    if (!(next_column_ < num_columns())) {
       std::stringstream ss;
       ss << "The schema only has " << num_columns()
-         << " columns, requested metadata for column: " << current_column_;
+         << " columns, requested metadata for column: " << next_column_;
       throw ParquetException(ss.str());
     }
-    auto column = schema_->Column(current_column_);
+    auto column = schema_->Column(next_column_);
     auto column_builder = ColumnChunkMetaDataBuilder::Make(
-        properties_, column, &row_group_->columns[current_column_++]);
+        properties_, column, &row_group_->columns[next_column_++]);
     auto column_builder_ptr = column_builder.get();
     column_builders_.push_back(std::move(column_builder));
     return column_builder_ptr;
   }
 
-  int current_column() { return current_column_; }
+  int current_column() { return next_column_ - 1; }
 
   void Finish(int64_t total_bytes_written) {
-    if (!(current_column_ == schema_->num_columns())) {
+    if (!(next_column_ == schema_->num_columns())) {
       std::stringstream ss;
-      ss << "Only " << current_column_ - 1 << " out of " << schema_->num_columns()
+      ss << "Only " << next_column_ - 1 << " out of " << schema_->num_columns()
          << " columns are initialized";
       throw ParquetException(ss.str());
     }
@@ -815,7 +837,7 @@ class RowGroupMetaDataBuilder::RowGroupMetaDataBuilderImpl {
   const std::shared_ptr<WriterProperties> properties_;
   const SchemaDescriptor* schema_;
   std::vector<std::unique_ptr<ColumnChunkMetaDataBuilder>> column_builders_;
-  int current_column_;
+  int next_column_;
 };
 
 std::unique_ptr<RowGroupMetaDataBuilder> RowGroupMetaDataBuilder::Make(
@@ -907,7 +929,7 @@ class FileMetaDataBuilder::FileMetaDataBuilderImpl {
     // in the spec yet.
     // We always default to `TYPE_DEFINED_ORDER`. We can expose it in
     // the API once we have user defined sort orders in the Parquet format.
-    // TypeDefinedOrder implies choose SortOrder based on LogicalType/PhysicalType
+    // TypeDefinedOrder implies choose SortOrder based on ConvertedType/PhysicalType
     format::TypeDefinedOrder type_defined_order;
     format::ColumnOrder column_order;
     column_order.__set_TYPE_ORDER(type_defined_order);

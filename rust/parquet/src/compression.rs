@@ -17,7 +17,7 @@
 
 //! Contains codec interface and supported codec implementations.
 //!
-//! See [`Compression`](`::basic::Compression`) enum for all available compression
+//! See [`Compression`](crate::basic::Compression) enum for all available compression
 //! algorithms.
 //!
 //! # Example
@@ -338,5 +338,4 @@ mod tests {
     fn test_codec_zstd() {
         test_codec(CodecType::ZSTD);
     }
-
 }

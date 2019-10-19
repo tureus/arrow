@@ -21,9 +21,10 @@
 #include "arrow/adapters/orc/adapter_util.h"
 #include "arrow/array/builder_base.h"
 #include "arrow/builder.h"
+#include "arrow/status.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
-#include "arrow/util/lazy.h"
+#include "arrow/util/range.h"
 
 #include "orc/Exceptions.hh"
 #include "orc/OrcFile.hh"

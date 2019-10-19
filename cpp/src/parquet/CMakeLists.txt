@@ -29,7 +29,6 @@ if(NOT VERSION)
 endif()
 
 function(ADD_PARQUET_TEST REL_TEST_NAME)
-  set(options USE_STATIC_LINKING)
   set(one_value_args)
   set(multi_value_args EXTRA_DEPENDENCIES LABELS)
   cmake_parse_arguments(ARG
@@ -37,21 +36,21 @@ function(ADD_PARQUET_TEST REL_TEST_NAME)
                         "${one_value_args}"
                         "${multi_value_args}"
                         ${ARGN})
-  if(ARG_UNPARSED_ARGUMENTS)
-    message(SEND_ERROR "Error: unrecognized arguments: ${ARG_UNPARSED_ARGUMENTS}")
-  endif()
 
   set(TEST_ARGUMENTS PREFIX "parquet" LABELS "parquet-tests")
 
-  # By default we prefer shared linking with libparquet, as it's faster
-  # and uses less disk space, but in some cases we need to force static
-  # linking (see rationale below).
-  if(ARG_USE_STATIC_LINKING OR ARROW_TEST_LINKAGE STREQUAL "static")
-    add_test_case(${REL_TEST_NAME} STATIC_LINK_LIBS ${PARQUET_STATIC_TEST_LINK_LIBS}
-                  ${TEST_ARGUMENTS})
+  if(ARROW_TEST_LINKAGE STREQUAL "static")
+    add_test_case(${REL_TEST_NAME}
+                  STATIC_LINK_LIBS
+                  ${PARQUET_STATIC_TEST_LINK_LIBS}
+                  ${TEST_ARGUMENTS}
+                  ${ARG_UNPARSED_ARGUMENTS})
   else()
-    add_test_case(${REL_TEST_NAME} STATIC_LINK_LIBS ${PARQUET_SHARED_TEST_LINK_LIBS}
-                  ${TEST_ARGUMENTS})
+    add_test_case(${REL_TEST_NAME}
+                  STATIC_LINK_LIBS
+                  ${PARQUET_SHARED_TEST_LINK_LIBS}
+                  ${TEST_ARGUMENTS}
+                  ${ARG_UNPARSED_ARGUMENTS})
   endif()
 endfunction()
 
@@ -90,10 +89,11 @@ else()
   set(ARROW_LIBRARIES_FOR_STATIC_TESTS arrow_testing_shared arrow_shared)
 endif()
 
-set(PARQUET_BOOST_LINK_LIBS ${BOOST_REGEX_LIBRARY})
+set(PARQUET_BOOST_LINK_LIBS)
 
-if(MSVC)
-  set(PARQUET_BOOST_LINK_LIBS ${PARQUET_BOOST_LINK_LIBS} ${BOOST_SYSTEM_LIBRARY})
+if("${COMPILER_FAMILY}" STREQUAL "gcc" AND "${COMPILER_VERSION}" VERSION_LESS "4.9")
+  add_definitions(-DPARQUET_USE_BOOST_REGEX)
+  list(APPEND PARQUET_BOOST_LINK_LIBS ${BOOST_REGEX_LIBRARY})
 endif()
 
 set(PARQUET_MIN_TEST_LIBS GTest::Main GTest::GTest)
@@ -104,22 +104,11 @@ elseif(NOT MSVC)
   set(PARQUET_MIN_TEST_LIBS ${PARQUET_MIN_TEST_LIBS} pthread ${CMAKE_DL_LIBS})
 endif()
 
-set(PARQUET_SHARED_TEST_LINK_LIBS
-    arrow_testing_shared
-    ${PARQUET_MIN_TEST_LIBS}
-    parquet_shared
-    Thrift::thrift)
+set(PARQUET_SHARED_TEST_LINK_LIBS arrow_testing_shared ${PARQUET_MIN_TEST_LIBS}
+                                  parquet_shared Thrift::thrift)
 
 set(PARQUET_STATIC_TEST_LINK_LIBS ${PARQUET_MIN_TEST_LIBS} parquet_static
-    ${ARROW_LIBRARIES_FOR_STATIC_TESTS})
-
-if(WIN32 OR NOT ARROW_BUILD_SHARED)
-  # The benchmarks depend on some static Thrift symbols
-  set(PARQUET_BENCHMARK_LINK_OPTION STATIC_LINK_LIBS benchmark::benchmark_main
-      ${PARQUET_STATIC_TEST_LINK_LIBS})
-else()
-  set(PARQUET_BENCHMARK_LINK_OPTION EXTRA_LINK_LIBS parquet_shared)
-endif()
+                                  ${ARROW_LIBRARIES_FOR_STATIC_TESTS})
 
 #
 # Generated Thrift sources
@@ -134,7 +123,7 @@ set(THRIFT_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
 set(THRIFT_OUTPUT_FILES "${THRIFT_OUTPUT_DIR}/parquet_types.cpp")
 set(THRIFT_OUTPUT_FILES ${THRIFT_OUTPUT_FILES} "${THRIFT_OUTPUT_DIR}/parquet_types.h")
 set(THRIFT_OUTPUT_FILES ${THRIFT_OUTPUT_FILES}
-    "${THRIFT_OUTPUT_DIR}/parquet_constants.cpp")
+                        "${THRIFT_OUTPUT_DIR}/parquet_constants.cpp")
 set(THRIFT_OUTPUT_FILES ${THRIFT_OUTPUT_FILES} "${THRIFT_OUTPUT_DIR}/parquet_constants.h")
 
 set_source_files_properties(${THRIFT_OUTPUT_FILES} PROPERTIES GENERATED TRUE)
@@ -143,8 +132,11 @@ get_filename_component(ABS_PARQUET_THRIFT parquet.thrift ABSOLUTE)
 
 add_custom_command(OUTPUT ${THRIFT_OUTPUT_FILES}
                    COMMAND ${THRIFT_COMPILER}
-                           --gen cpp -out ${THRIFT_OUTPUT_DIR}
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/parquet.thrift
+                           --gen
+                           cpp
+                           -out
+                           ${THRIFT_OUTPUT_DIR}
+                           ${CMAKE_CURRENT_SOURCE_DIR}/parquet.thrift
                    DEPENDS ${ABS_PARQUET_THRIFT} Thrift::thrift
                    COMMENT "Running thrift compiler on parquet.thrift"
                    VERBATIM)
@@ -154,13 +146,14 @@ add_custom_command(OUTPUT ${THRIFT_OUTPUT_FILES}
 
 set(PARQUET_SRCS
     arrow/reader.cc
-    arrow/record_reader.cc
+    arrow/reader_internal.cc
     arrow/schema.cc
     arrow/writer.cc
     bloom_filter.cc
     column_reader.cc
     column_scanner.cc
     column_writer.cc
+    deprecated_io.cc
     encoding.cc
     file_reader.cc
     file_writer.cc
@@ -168,12 +161,12 @@ set(PARQUET_SRCS
     murmur3.cc
     parquet_constants.cpp
     parquet_types.cpp
+    platform.cc
     printer.cc
+    properties.cc
     schema.cc
     statistics.cc
-    types.cc
-    util/comparison.cc
-    util/memory.cc)
+    types.cc)
 
 # Ensure that thrift compilation is done before using its generated headers
 # in parquet code.
@@ -187,16 +180,16 @@ if(NOT PARQUET_MINIMAL_DEPENDENCY)
   # do not need to be linked transitively by other linkers)
   set(PARQUET_SHARED_PRIVATE_LINK_LIBS ${PARQUET_BOOST_LINK_LIBS} Thrift::thrift)
 
-  # Link publicly with # parquet_static (because internal users need to
+  # Link publicly with parquet_static (because internal users need to
   # transitively link all dependencies)
   set(PARQUET_STATIC_LINK_LIBS ${PARQUET_STATIC_LINK_LIBS} ${PARQUET_BOOST_LINK_LIBS}
-      Thrift::thrift)
+                               Thrift::thrift)
 
   # Although we don't link parquet_objlib against anything, we need it to depend
   # on these libs as we may generate their headers via ExternalProject_Add
   if(ARROW_BUILD_SHARED)
     set(PARQUET_DEPENDENCIES ${PARQUET_DEPENDENCIES} ${PARQUET_SHARED_LINK_LIBS}
-        ${PARQUET_SHARED_PRIVATE_LINK_LIBS})
+                             ${PARQUET_SHARED_PRIVATE_LINK_LIBS})
   endif()
 
   if(ARROW_BUILD_STATIC)
@@ -209,20 +202,11 @@ if(NOT APPLE AND NOT MSVC)
   # Localize thirdparty symbols using a linker version script. This hides them
   # from the client application. The OS X linker does not support the
   # version-script option.
-  set(SHARED_LINK_FLAGS
-      "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/parquet/symbols.map")
-endif()
-
-# Because of PARQUET-1420 (Thrift-generated symbols not exported in DLL),
-# parquet tests must be linked against the static parquet lib.
-if(NO_TESTS)
-  set(PARQUET_LIB_OPTIONS)
-else()
-  set(PARQUET_LIB_OPTIONS "BUILD_STATIC")
+  set(PARQUET_SHARED_LINK_FLAGS
+      "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/symbols.map")
 endif()
 
 add_arrow_lib(parquet
-              ${PARQUET_LIB_OPTIONS}
               SOURCES
               ${PARQUET_SRCS}
               OUTPUTS
@@ -237,6 +221,19 @@ add_arrow_lib(parquet
               ${PARQUET_SHARED_PRIVATE_LINK_LIBS}
               STATIC_LINK_LIBS
               ${PARQUET_STATIC_LINK_LIBS})
+
+if(WIN32 AND NOT (ARROW_TEST_LINKAGE STREQUAL "static"))
+  add_library(parquet_test_support STATIC parquet_constants.cpp parquet_types.cpp)
+  set(PARQUET_SHARED_TEST_LINK_LIBS ${PARQUET_SHARED_TEST_LINK_LIBS} parquet_test_support)
+  set(PARQUET_LIBRARIES ${PARQUET_LIBRARIES} parquet_test_support)
+endif()
+
+if(NOT ARROW_BUILD_SHARED)
+  set(PARQUET_BENCHMARK_LINK_OPTION STATIC_LINK_LIBS benchmark::benchmark_main
+                                    ${PARQUET_STATIC_TEST_LINK_LIBS})
+else()
+  set(PARQUET_BENCHMARK_LINK_OPTION EXTRA_LINK_LIBS ${PARQUET_SHARED_TEST_LINK_LIBS})
+endif()
 
 if(ARROW_BUILD_STATIC AND WIN32)
   # ARROW-4848: Static Parquet lib needs to import static symbols on Windows
@@ -261,16 +258,12 @@ foreach(LIB_TARGET ${PARQUET_LIBRARIES})
   endif()
 endforeach()
 
-# We always build the Parquet static libraries (see PARQUET-1420) so we add the
-# PARQUET_STATIC public compile definition if we are building the unit tests OR
-# if we are building the static library
-if(WIN32 AND (NOT NO_TESTS OR ARROW_BUILD_STATIC))
+if(WIN32 AND ARROW_BUILD_STATIC)
   target_compile_definitions(parquet_static PUBLIC PARQUET_STATIC)
 endif()
 
 add_subdirectory(api)
 add_subdirectory(arrow)
-add_subdirectory(util)
 
 arrow_install_all_headers("parquet")
 
@@ -282,26 +275,45 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/parquet_version.h"
 # pkg-config support
 arrow_add_pkg_config("parquet")
 
-add_parquet_test(bloom_filter-test)
-add_parquet_test(column_reader-test)
-add_parquet_test(column_scanner-test)
-add_parquet_test(column_writer-test)
-add_parquet_test(file-serialize-test)
-add_parquet_test(properties-test)
-add_parquet_test(statistics-test)
-add_parquet_test(encoding-test)
-add_parquet_test(metadata-test)
-add_parquet_test(public-api-test)
-add_parquet_test(types-test)
-add_parquet_test(reader-test)
+add_parquet_test(internals-test
+                 SOURCES
+                 bloom_filter_test.cc
+                 deprecated_io_test.cc
+                 properties_test.cc
+                 statistics_test.cc
+                 encoding_test.cc
+                 metadata_test.cc
+                 public_api_test.cc
+                 types_test.cc
+                 test_util.cc)
+
+add_parquet_test(reader_test
+                 SOURCES
+                 column_reader_test.cc
+                 column_scanner_test.cc
+                 reader_test.cc
+                 test_util.cc)
+
+add_parquet_test(writer-test
+                 SOURCES
+                 column_writer_test.cc
+                 file_serialize_test.cc
+                 test_util.cc)
+
+add_parquet_test(arrow-test
+                 SOURCES
+                 arrow/arrow_reader_writer_test.cc
+                 arrow/arrow_schema_test.cc
+                 test_util.cc)
 
 # Those tests need to use static linking as they access thrift-generated
 # symbols which are not exported by parquet.dll on Windows (PARQUET-1420).
-add_parquet_test(file-deserialize-test USE_STATIC_LINKING)
-add_parquet_test(schema-test USE_STATIC_LINKING)
+add_parquet_test(file_deserialize_test SOURCES file_deserialize_test.cc test_util.cc)
+add_parquet_test(schema_test)
 
-add_parquet_benchmark(column-io-benchmark)
-add_parquet_benchmark(encoding-benchmark)
+add_parquet_benchmark(column_io_benchmark)
+add_parquet_benchmark(encoding_benchmark)
+add_parquet_benchmark(arrow/reader_writer_benchmark PREFIX "parquet-arrow")
 
 # Required for tests, the ExternalProject for zstd does not build on CMake < 3.7
 if(ARROW_WITH_ZSTD)

@@ -45,17 +45,15 @@ namespace Apache.Arrow.Ipc
             IArrowArrayVisitor<StringArray>,
             IArrowArrayVisitor<BinaryArray>
         {
-            public struct Buffer
+            public readonly struct Buffer
             {
                 public readonly ArrowBuffer DataBuffer;
                 public readonly int Offset;
-                public readonly int Length;
 
-                public Buffer(ArrowBuffer buffer, int offset, int length)
+                public Buffer(ArrowBuffer buffer, int offset)
                 {
                     DataBuffer = buffer;
                     Offset = offset;
-                    Length = length;
                 }
             }
 
@@ -103,6 +101,12 @@ namespace Apache.Arrow.Ipc
                 _buffers.Add(CreateBuffer(array.ValueBuffer));
             }
 
+            private void CreateBuffers(BooleanArray array)
+            {
+                _buffers.Add(CreateBuffer(array.NullBitmapBuffer));
+                _buffers.Add(CreateBuffer(array.ValueBuffer));
+            }
+
             private void CreateBuffers<T>(PrimitiveArray<T> array)
                 where T: struct
             {
@@ -114,9 +118,10 @@ namespace Apache.Arrow.Ipc
             {
                 var offset = TotalLength;
 
-                TotalLength += buffer.Length;
+                int paddedLength = checked((int)BitUtility.RoundUpToMultipleOf8(buffer.Length));
+                TotalLength += paddedLength;
 
-                return new Buffer(buffer, offset, buffer.Length);
+                return new Buffer(buffer, offset);
             }
 
             public void Visit(IArrowArray array)
@@ -133,9 +138,12 @@ namespace Apache.Arrow.Ipc
 
         protected bool HasWrittenSchema { get; set; }
 
+        private bool HasWrittenEnd { get; set; }
+
         protected Schema Schema { get; }
 
         private readonly bool _leaveOpen;
+        private readonly IpcOptions _options;
 
         private protected const Flatbuf.MetadataVersion CurrentMetadataVersion = Flatbuf.MetadataVersion.V4;
 
@@ -143,11 +151,17 @@ namespace Apache.Arrow.Ipc
 
         private readonly ArrowTypeFlatbufferBuilder _fieldTypeBuilder;
 
-        public ArrowStreamWriter(Stream baseStream, Schema schema) : this(baseStream, schema, leaveOpen: false)
+        public ArrowStreamWriter(Stream baseStream, Schema schema)
+            : this(baseStream, schema, leaveOpen: false)
         {
         }
 
         public ArrowStreamWriter(Stream baseStream, Schema schema, bool leaveOpen)
+            : this(baseStream, schema, leaveOpen, options: null)
+        {
+        }
+
+        public ArrowStreamWriter(Stream baseStream, Schema schema, bool leaveOpen, IpcOptions options)
         {
             BaseStream = baseStream ?? throw new ArgumentNullException(nameof(baseStream));
             Schema = schema ?? throw new ArgumentNullException(nameof(schema));
@@ -158,6 +172,7 @@ namespace Apache.Arrow.Ipc
             HasWrittenSchema = false;
 
             _fieldTypeBuilder = new ArrowTypeFlatbufferBuilder(Builder);
+            _options = options ?? IpcOptions.Default;
         }
 
         private protected async Task WriteRecordBatchInternalAsync(RecordBatch recordBatch,
@@ -171,28 +186,26 @@ namespace Apache.Arrow.Ipc
                 HasWrittenSchema = true;
             }
 
-            var recordBatchBuilder = new ArrowRecordBatchFlatBufferBuilder();
-
             Builder.Clear();
 
             // Serialize field nodes
 
             var fieldCount = Schema.Fields.Count;
-            var fieldNodeOffsets = new Offset<Flatbuf.FieldNode>[fieldCount];
 
             Flatbuf.RecordBatch.StartNodesVector(Builder, fieldCount);
 
-            for (var i = 0; i < fieldCount; i++)
+            // flatbuffer struct vectors have to be created in reverse order
+            for (var i = fieldCount - 1; i >= 0; i--)
             {
                 var fieldArray = recordBatch.Column(i);
-                fieldNodeOffsets[i] =
-                    Flatbuf.FieldNode.CreateFieldNode(Builder, fieldArray.Length, fieldArray.NullCount);
+                Flatbuf.FieldNode.CreateFieldNode(Builder, fieldArray.Length, fieldArray.NullCount);
             }
 
             var fieldNodesVectorOffset = Builder.EndVector();
 
             // Serialize buffers
 
+            var recordBatchBuilder = new ArrowRecordBatchFlatBufferBuilder();
             for (var i = 0; i < fieldCount; i++)
             {
                 var fieldArray = recordBatch.Column(i);
@@ -200,14 +213,14 @@ namespace Apache.Arrow.Ipc
             }
 
             var buffers = recordBatchBuilder.Buffers;
-            var bufferOffsets = new Offset<Flatbuf.Buffer>[buffers.Count];
 
             Flatbuf.RecordBatch.StartBuffersVector(Builder, buffers.Count);
 
+            // flatbuffer struct vectors have to be created in reverse order
             for (var i = buffers.Count - 1; i >= 0; i--)
             {
-                bufferOffsets[i] = Flatbuf.Buffer.CreateBuffer(Builder,
-                    buffers[i].Offset, buffers[i].Length);
+                Flatbuf.Buffer.CreateBuffer(Builder,
+                    buffers[i].Offset, buffers[i].DataBuffer.Length);
             }
 
             var buffersVectorOffset = Builder.EndVector();
@@ -230,11 +243,20 @@ namespace Apache.Arrow.Ipc
 
             for (var i = 0; i < buffers.Count; i++)
             {
-                if (buffers[i].DataBuffer.IsEmpty)
+                ArrowBuffer buffer = buffers[i].DataBuffer;
+                if (buffer.IsEmpty)
                     continue;
 
-                await WriteBufferAsync(buffers[i].DataBuffer, cancellationToken).ConfigureAwait(false);
-                bodyLength += buffers[i].DataBuffer.Length;
+                await WriteBufferAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+                int paddedLength = checked((int)BitUtility.RoundUpToMultipleOf8(buffer.Length));
+                int padding = paddedLength - buffer.Length;
+                if (padding > 0)
+                {
+                    await WritePaddingAsync(padding).ConfigureAwait(false);
+                }
+
+                bodyLength += paddedLength;
             }
 
             // Write padding so the record batch message body length is a multiple of 8 bytes
@@ -244,6 +266,11 @@ namespace Apache.Arrow.Ipc
             await WritePaddingAsync(bodyPaddingLength).ConfigureAwait(false);
 
             FinishedWritingRecordBatch(bodyLength + bodyPaddingLength, metadataLength);
+        }
+
+        private protected virtual ValueTask WriteEndInternalAsync(CancellationToken cancellationToken)
+        {
+            return WriteIpcMessageLengthAsync(length: 0, cancellationToken);
         }
 
         private protected virtual void StartingWritingRecordBatch()
@@ -258,11 +285,19 @@ namespace Apache.Arrow.Ipc
         {
             return WriteRecordBatchInternalAsync(recordBatch, cancellationToken);
         }
-
-        public async Task WriteBufferAsync(ArrowBuffer arrowBuffer, CancellationToken cancellationToken = default)
+        
+        public async Task WriteEndAsync(CancellationToken cancellationToken = default)
         {
-            await BaseStream.WriteAsync(arrowBuffer.Memory, cancellationToken)
-                .ConfigureAwait(false);
+            if (!HasWrittenEnd)
+            {
+                await WriteEndInternalAsync(cancellationToken);
+                HasWrittenEnd = true;
+            }
+        }
+
+        private ValueTask WriteBufferAsync(ArrowBuffer arrowBuffer, CancellationToken cancellationToken = default)
+        {
+            return BaseStream.WriteAsync(arrowBuffer.Memory, cancellationToken);
         }
 
         private protected Offset<Flatbuf.Schema> SerializeSchema(Schema schema)
@@ -325,27 +360,23 @@ namespace Apache.Arrow.Ipc
             where T: struct
         {
             var messageOffset = Flatbuf.Message.CreateMessage(
-                Builder, CurrentMetadataVersion, headerType, headerOffset.Value, 
+                Builder, CurrentMetadataVersion, headerType, headerOffset.Value,
                 bodyLength);
 
             Builder.Finish(messageOffset.Value);
 
             var messageData = Builder.DataBuffer.ToReadOnlyMemory(Builder.DataBuffer.Position, Builder.Offset);
-            var messagePaddingLength = CalculatePadding(messageData.Length);
+            var messagePaddingLength = CalculatePadding(_options.SizeOfIpcLength + messageData.Length);
 
-            await Buffers.RentReturnAsync(4, async (buffer) =>
-            {
-                var metadataSize = messageData.Length + messagePaddingLength;
-                BinaryPrimitives.WriteInt32LittleEndian(buffer.Span, metadataSize);
-                await BaseStream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-            }).ConfigureAwait(false);
+            await WriteIpcMessageLengthAsync(messageData.Length + messagePaddingLength, cancellationToken)
+                .ConfigureAwait(false);
 
             await BaseStream.WriteAsync(messageData, cancellationToken).ConfigureAwait(false);
             await WritePaddingAsync(messagePaddingLength).ConfigureAwait(false);
 
             checked
             {
-                return 4 + messageData.Length + messagePaddingLength;
+                return _options.SizeOfIpcLength + messageData.Length + messagePaddingLength;
             }
         }
 
@@ -354,6 +385,23 @@ namespace Apache.Arrow.Ipc
             var segment = Builder.DataBuffer.ToReadOnlyMemory(Builder.DataBuffer.Position, Builder.Offset);
 
             await BaseStream.WriteAsync(segment, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async ValueTask WriteIpcMessageLengthAsync(int length, CancellationToken cancellationToken)
+        {
+            await Buffers.RentReturnAsync(_options.SizeOfIpcLength, async (buffer) =>
+            {
+                Memory<byte> currentBufferPosition = buffer;
+                if (!_options.WriteLegacyIpcFormat)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(
+                        currentBufferPosition.Span, MessageSerializer.IpcContinuationToken);
+                    currentBufferPosition = currentBufferPosition.Slice(sizeof(int));
+                }
+
+                BinaryPrimitives.WriteInt32LittleEndian(currentBufferPosition.Span, length);
+                await BaseStream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+            }).ConfigureAwait(false);
         }
 
         protected int CalculatePadding(long offset, int alignment = 8)
@@ -365,11 +413,14 @@ namespace Apache.Arrow.Ipc
             }
         }
 
-        protected Task WritePaddingAsync(int length)
+        private protected ValueTask WritePaddingAsync(int length)
         {
-            if (length <= 0) return Task.CompletedTask;
+            if (length > 0)
+            {
+                return BaseStream.WriteAsync(Padding.AsMemory(0, Math.Min(Padding.Length, length)));
+            }
 
-            return BaseStream.WriteAsync(Padding, 0, Math.Min(Padding.Length, length));
+            return default;
         }
 
         public virtual void Dispose()

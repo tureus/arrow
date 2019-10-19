@@ -29,6 +29,7 @@
 #include "arrow/util/logging.h"
 
 #include "arrow/python/common.h"
+#include "arrow/python/pyarrow.h"
 
 namespace arrow {
 namespace py {
@@ -36,35 +37,39 @@ namespace py {
 // ----------------------------------------------------------------------
 // Python file
 
-// This is annoying: because C++11 does not allow implicit conversion of string
-// literals to non-const char*, we need to go through some gymnastics to use
-// PyObject_CallMethod without a lot of pain (its arguments are non-const
-// char*)
-template <typename... ArgTypes>
-static inline PyObject* cpp_PyObject_CallMethod(PyObject* obj, const char* method_name,
-                                                const char* argspec, ArgTypes... args) {
-  return PyObject_CallMethod(obj, const_cast<char*>(method_name),
-                             const_cast<char*>(argspec), args...);
-}
-
 // A common interface to a Python file-like object. Must acquire GIL before
 // calling any methods
 class PythonFile {
  public:
-  explicit PythonFile(PyObject* file) : file_(file) { Py_INCREF(file_); }
+  explicit PythonFile(PyObject* file) : file_(file) { Py_INCREF(file); }
 
-  ~PythonFile() { Py_DECREF(file_); }
+  Status CheckClosed() const {
+    if (!file_) {
+      return Status::Invalid("operation on closed Python file");
+    }
+    return Status::OK();
+  }
 
   Status Close() {
-    // whence: 0 for relative to start of file, 2 for end of file
-    PyObject* result = cpp_PyObject_CallMethod(file_, "close", "()");
-    Py_XDECREF(result);
-    PY_RETURN_IF_ERROR(StatusCode::IOError);
+    if (file_) {
+      PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "close", "()");
+      Py_XDECREF(result);
+      file_.reset();
+      PY_RETURN_IF_ERROR(StatusCode::IOError);
+    }
+    return Status::OK();
+  }
+
+  Status Abort() {
+    file_.reset();
     return Status::OK();
   }
 
   bool closed() const {
-    PyObject* result = PyObject_GetAttrString(file_, "closed");
+    if (!file_) {
+      return true;
+    }
+    PyObject* result = PyObject_GetAttrString(file_.obj(), "closed");
     if (result == NULL) {
       // Can't propagate the error, so write it out and return an arbitrary value
       PyErr_WriteUnraisable(NULL);
@@ -80,8 +85,10 @@ class PythonFile {
   }
 
   Status Seek(int64_t position, int whence) {
+    RETURN_NOT_OK(CheckClosed());
+
     // whence: 0 for relative to start of file, 2 for end of file
-    PyObject* result = cpp_PyObject_CallMethod(file_, "seek", "(ni)",
+    PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "seek", "(ni)",
                                                static_cast<Py_ssize_t>(position), whence);
     Py_XDECREF(result);
     PY_RETURN_IF_ERROR(StatusCode::IOError);
@@ -89,27 +96,56 @@ class PythonFile {
   }
 
   Status Read(int64_t nbytes, PyObject** out) {
-    PyObject* result =
-        cpp_PyObject_CallMethod(file_, "read", "(n)", static_cast<Py_ssize_t>(nbytes));
+    RETURN_NOT_OK(CheckClosed());
+
+    PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "read", "(n)",
+                                               static_cast<Py_ssize_t>(nbytes));
     PY_RETURN_IF_ERROR(StatusCode::IOError);
     *out = result;
     return Status::OK();
   }
 
   Status Write(const void* data, int64_t nbytes) {
+    RETURN_NOT_OK(CheckClosed());
+
+    // Since the data isn't owned, we have to make a copy
     PyObject* py_data =
         PyBytes_FromStringAndSize(reinterpret_cast<const char*>(data), nbytes);
     PY_RETURN_IF_ERROR(StatusCode::IOError);
 
-    PyObject* result = cpp_PyObject_CallMethod(file_, "write", "(O)", py_data);
+    PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "write", "(O)", py_data);
     Py_XDECREF(py_data);
     Py_XDECREF(result);
     PY_RETURN_IF_ERROR(StatusCode::IOError);
     return Status::OK();
   }
 
+  Status Write(const std::shared_ptr<Buffer>& buffer) {
+    RETURN_NOT_OK(CheckClosed());
+
+#if PY_MAJOR_VERSION < 3
+    // On Python 2, a write() method can typically call str() on its argument
+    // to get its bytes payload (this is the case with socket.makefile()).
+    // Unfortunately, on non-bytes buffer-like objects this will give out
+    // the repr() of the object rather than its data.  So fall back on
+    // copying the data to a bytes object.
+    return Write(buffer->data(), buffer->size());
+#else
+    PyObject* py_data = wrap_buffer(buffer);
+    PY_RETURN_IF_ERROR(StatusCode::IOError);
+
+    PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "write", "(O)", py_data);
+    Py_XDECREF(py_data);
+    Py_XDECREF(result);
+    PY_RETURN_IF_ERROR(StatusCode::IOError);
+    return Status::OK();
+#endif
+  }
+
   Status Tell(int64_t* position) {
-    PyObject* result = cpp_PyObject_CallMethod(file_, "tell", "()");
+    RETURN_NOT_OK(CheckClosed());
+
+    PyObject* result = cpp_PyObject_CallMethod(file_.obj(), "tell", "()");
     PY_RETURN_IF_ERROR(StatusCode::IOError);
 
     *position = PyLong_AsLongLong(result);
@@ -125,7 +161,7 @@ class PythonFile {
 
  private:
   std::mutex lock_;
-  PyObject* file_;
+  OwnedRefNoGIL file_;
 };
 
 // ----------------------------------------------------------------------
@@ -133,83 +169,98 @@ class PythonFile {
 
 PyReadableFile::PyReadableFile(PyObject* file) { file_.reset(new PythonFile(file)); }
 
+// The destructor does not close the underlying Python file object, as
+// there may be multiple references to it.  Instead let the Python
+// destructor do its job.
 PyReadableFile::~PyReadableFile() {}
 
+Status PyReadableFile::Abort() {
+  return SafeCallIntoPython([this]() { return file_->Abort(); });
+}
+
 Status PyReadableFile::Close() {
-  PyAcquireGIL lock;
-  return file_->Close();
+  return SafeCallIntoPython([this]() { return file_->Close(); });
 }
 
 bool PyReadableFile::closed() const {
-  PyAcquireGIL lock;
-  return file_->closed();
+  bool res;
+  Status st = SafeCallIntoPython([this, &res]() {
+    res = file_->closed();
+    return Status::OK();
+  });
+  return res;
 }
 
 Status PyReadableFile::Seek(int64_t position) {
-  PyAcquireGIL lock;
-  return file_->Seek(position, 0);
+  return SafeCallIntoPython([=] { return file_->Seek(position, 0); });
 }
 
 Status PyReadableFile::Tell(int64_t* position) const {
-  PyAcquireGIL lock;
-  return file_->Tell(position);
+  return SafeCallIntoPython([=]() { return file_->Tell(position); });
 }
 
 Status PyReadableFile::Read(int64_t nbytes, int64_t* bytes_read, void* out) {
-  PyAcquireGIL lock;
+  return SafeCallIntoPython([=]() {
+    OwnedRef bytes;
+    RETURN_NOT_OK(file_->Read(nbytes, bytes.ref()));
+    PyObject* bytes_obj = bytes.obj();
+    DCHECK(bytes_obj != NULL);
 
-  PyObject* bytes_obj = NULL;
-  RETURN_NOT_OK(file_->Read(nbytes, &bytes_obj));
-  DCHECK(bytes_obj != NULL);
+    if (!PyBytes_Check(bytes_obj)) {
+      return Status::TypeError(
+          "Python file read() should have returned a bytes object, got '",
+          Py_TYPE(bytes_obj)->tp_name, "' (did you open the file in binary mode?)");
+    }
 
-  *bytes_read = PyBytes_GET_SIZE(bytes_obj);
-  std::memcpy(out, PyBytes_AS_STRING(bytes_obj), *bytes_read);
-  Py_XDECREF(bytes_obj);
-
-  return Status::OK();
+    *bytes_read = PyBytes_GET_SIZE(bytes_obj);
+    std::memcpy(out, PyBytes_AS_STRING(bytes_obj), *bytes_read);
+    return Status::OK();
+  });
 }
 
 Status PyReadableFile::Read(int64_t nbytes, std::shared_ptr<Buffer>* out) {
-  PyAcquireGIL lock;
+  return SafeCallIntoPython([=]() {
+    OwnedRef bytes_obj;
+    RETURN_NOT_OK(file_->Read(nbytes, bytes_obj.ref()));
+    DCHECK(bytes_obj.obj() != NULL);
 
-  OwnedRef bytes_obj;
-  RETURN_NOT_OK(file_->Read(nbytes, bytes_obj.ref()));
-  DCHECK(bytes_obj.obj() != NULL);
-
-  return PyBuffer::FromPyObject(bytes_obj.obj(), out);
+    return PyBuffer::FromPyObject(bytes_obj.obj(), out);
+  });
 }
 
 Status PyReadableFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
                               void* out) {
   std::lock_guard<std::mutex> guard(file_->lock());
-  RETURN_NOT_OK(Seek(position));
-  return Read(nbytes, bytes_read, out);
+  return SafeCallIntoPython([=]() {
+    RETURN_NOT_OK(Seek(position));
+    return Read(nbytes, bytes_read, out);
+  });
 }
 
 Status PyReadableFile::ReadAt(int64_t position, int64_t nbytes,
                               std::shared_ptr<Buffer>* out) {
   std::lock_guard<std::mutex> guard(file_->lock());
-  RETURN_NOT_OK(Seek(position));
-  return Read(nbytes, out);
+  return SafeCallIntoPython([=]() {
+    RETURN_NOT_OK(Seek(position));
+    return Read(nbytes, out);
+  });
 }
 
 Status PyReadableFile::GetSize(int64_t* size) {
-  PyAcquireGIL lock;
+  return SafeCallIntoPython([=]() {
+    int64_t current_position = -1;
 
-  int64_t current_position = -1;
+    RETURN_NOT_OK(file_->Tell(&current_position));
+    RETURN_NOT_OK(file_->Seek(0, 2));
 
-  RETURN_NOT_OK(file_->Tell(&current_position));
+    int64_t file_size = -1;
+    RETURN_NOT_OK(file_->Tell(&file_size));
+    // Restore previous file position
+    RETURN_NOT_OK(file_->Seek(current_position, 0));
 
-  RETURN_NOT_OK(file_->Seek(0, 2));
-
-  int64_t file_size = -1;
-  RETURN_NOT_OK(file_->Tell(&file_size));
-
-  // Restore previous file position
-  RETURN_NOT_OK(file_->Seek(current_position, 0));
-
-  *size = file_size;
-  return Status::OK();
+    *size = file_size;
+    return Status::OK();
+  });
 }
 
 // ----------------------------------------------------------------------
@@ -219,16 +270,26 @@ PyOutputStream::PyOutputStream(PyObject* file) : position_(0) {
   file_.reset(new PythonFile(file));
 }
 
+// The destructor does not close the underlying Python file object, as
+// there may be multiple references to it.  Instead let the Python
+// destructor do its job.
 PyOutputStream::~PyOutputStream() {}
 
+Status PyOutputStream::Abort() {
+  return SafeCallIntoPython([=]() { return file_->Abort(); });
+}
+
 Status PyOutputStream::Close() {
-  PyAcquireGIL lock;
-  return file_->Close();
+  return SafeCallIntoPython([=]() { return file_->Close(); });
 }
 
 bool PyOutputStream::closed() const {
-  PyAcquireGIL lock;
-  return file_->closed();
+  bool res;
+  Status st = SafeCallIntoPython([this, &res]() {
+    res = file_->closed();
+    return Status::OK();
+  });
+  return res;
 }
 
 Status PyOutputStream::Tell(int64_t* position) const {
@@ -237,9 +298,17 @@ Status PyOutputStream::Tell(int64_t* position) const {
 }
 
 Status PyOutputStream::Write(const void* data, int64_t nbytes) {
-  PyAcquireGIL lock;
-  position_ += nbytes;
-  return file_->Write(data, nbytes);
+  return SafeCallIntoPython([=]() {
+    position_ += nbytes;
+    return file_->Write(data, nbytes);
+  });
+}
+
+Status PyOutputStream::Write(const std::shared_ptr<Buffer>& buffer) {
+  return SafeCallIntoPython([=]() {
+    position_ += buffer->size();
+    return file_->Write(buffer);
+  });
 }
 
 // ----------------------------------------------------------------------

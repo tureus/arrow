@@ -24,7 +24,10 @@
 #include "parquet/exception.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
+#include "parquet/platform.h"
 #include "parquet/printer.h"
+#include "parquet/properties.h"
+#include "parquet/statistics.h"
 
 // Schemas
 #include "parquet/api/schema.h"

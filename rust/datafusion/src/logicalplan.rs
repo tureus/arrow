@@ -15,7 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Logical query plan
+//! This module provides a logical query plan enum that can describe queries. Logical query
+//! plans can be created from a SQL statement or built programmatically via the Table API.
+//!
+//! Logical query plans can then be optimized and executed directly, or translated into
+//! physical query plans and executed.
 
 use std::fmt;
 use std::sync::Arc;
@@ -24,9 +28,10 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use crate::error::{ExecutionError, Result};
 use crate::optimizer::utils;
+use crate::sql::parser::FileType;
 
 /// Enumeration of supported function types (Scalar and Aggregate)
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum FunctionType {
     /// Simple function returning a value per DataFrame
     Scalar,
@@ -81,7 +86,7 @@ impl FunctionMeta {
 }
 
 /// Operators applied to expressions
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operator {
     /// Expressions are equal
     Eq,
@@ -118,7 +123,7 @@ pub enum Operator {
 }
 
 /// ScalarValue enumeration
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScalarValue {
     /// null value
     Null,
@@ -172,7 +177,7 @@ impl ScalarValue {
 }
 
 /// Relation expression
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Expr {
     /// index into a value within the row or complex value
     Column(usize),
@@ -378,7 +383,7 @@ impl fmt::Debug for Expr {
 
 /// The LogicalPlan represents different types of relations (such as Projection,
 /// Selection, etc) and can be created by the SQL query planner and the DataFrame API.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Clone)]
 pub enum LogicalPlan {
     /// A Projection (essentially a SELECT with an expression list)
     Projection {
@@ -422,8 +427,10 @@ pub enum LogicalPlan {
         schema_name: String,
         /// The name of the table
         table_name: String,
-        /// The schema description
-        schema: Arc<Schema>,
+        /// The underlying table schema
+        table_schema: Arc<Schema>,
+        /// The projected schema
+        projected_schema: Arc<Schema>,
         /// Optional column indices to use as a projection
         projection: Option<Vec<usize>>,
     },
@@ -441,6 +448,19 @@ pub enum LogicalPlan {
         /// The schema description
         schema: Arc<Schema>,
     },
+    /// Represents a create external table expression.
+    CreateExternalTable {
+        /// The table schema
+        schema: Arc<Schema>,
+        /// The table name
+        name: String,
+        /// The physical location
+        location: String,
+        /// The file type of physical file
+        file_type: FileType,
+        /// Whether the CSV file contains a header
+        header_row: bool,
+    },
 }
 
 impl LogicalPlan {
@@ -448,12 +468,15 @@ impl LogicalPlan {
     pub fn schema(&self) -> &Arc<Schema> {
         match self {
             LogicalPlan::EmptyRelation { schema } => &schema,
-            LogicalPlan::TableScan { schema, .. } => &schema,
+            LogicalPlan::TableScan {
+                projected_schema, ..
+            } => &projected_schema,
             LogicalPlan::Projection { schema, .. } => &schema,
             LogicalPlan::Selection { input, .. } => input.schema(),
             LogicalPlan::Aggregate { schema, .. } => &schema,
             LogicalPlan::Sort { schema, .. } => &schema,
             LogicalPlan::Limit { schema, .. } => &schema,
+            LogicalPlan::CreateExternalTable { schema, .. } => &schema,
         }
     }
 }
@@ -530,6 +553,9 @@ impl LogicalPlan {
                 write!(f, "Limit: {:?}", expr)?;
                 input.fmt_with_indent(f, indent + 1)
             }
+            LogicalPlan::CreateExternalTable { ref name, .. } => {
+                write!(f, "CreateExternalTable: {:?}", name)
+            }
         }
     }
 }
@@ -549,15 +575,15 @@ pub fn can_coerce_from(type_into: &DataType, type_from: &DataType) -> bool {
             _ => false,
         },
         Int16 => match type_from {
-            Int8 | Int16 => true,
+            Int8 | Int16 | UInt8 => true,
             _ => false,
         },
         Int32 => match type_from {
-            Int8 | Int16 | Int32 => true,
+            Int8 | Int16 | Int32 | UInt8 | UInt16 => true,
             _ => false,
         },
         Int64 => match type_from {
-            Int8 | Int16 | Int32 | Int64 => true,
+            Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 => true,
             _ => false,
         },
         UInt8 => match type_from {
@@ -596,7 +622,6 @@ pub fn can_coerce_from(type_into: &DataType, type_from: &DataType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
     use std::thread;
 
     #[test]
@@ -605,7 +630,8 @@ mod tests {
         let plan = Arc::new(LogicalPlan::TableScan {
             schema_name: "".to_string(),
             table_name: "people".to_string(),
-            schema: Arc::new(schema),
+            table_schema: Arc::new(schema.clone()),
+            projected_schema: Arc::new(schema),
             projection: Some(vec![0, 1, 4]),
         });
 
@@ -614,46 +640,5 @@ mod tests {
         thread::spawn(move || {
             println!("plan: {:?}", plan1);
         });
-    }
-
-    #[test]
-    fn serialize_plan() {
-        let schema = Schema::new(vec![
-            Field::new("first_name", DataType::Utf8, false),
-            Field::new("last_name", DataType::Utf8, false),
-            Field::new(
-                "address",
-                DataType::Struct(vec![
-                    Field::new("street", DataType::Utf8, false),
-                    Field::new("zip", DataType::UInt16, false),
-                ]),
-                false,
-            ),
-        ]);
-
-        let plan = LogicalPlan::TableScan {
-            schema_name: "".to_string(),
-            table_name: "people".to_string(),
-            schema: Arc::new(schema),
-            projection: Some(vec![0, 1, 4]),
-        };
-
-        let serialized = serde_json::to_string(&plan).unwrap();
-
-        assert_eq!(
-            "{\"TableScan\":{\
-             \"schema_name\":\"\",\
-             \"table_name\":\"people\",\
-             \"schema\":{\"fields\":[\
-             {\"name\":\"first_name\",\"data_type\":\"Utf8\",\"nullable\":false},\
-             {\"name\":\"last_name\",\"data_type\":\"Utf8\",\"nullable\":false},\
-             {\"name\":\"address\",\"data_type\":{\"Struct\":\
-             [\
-             {\"name\":\"street\",\"data_type\":\"Utf8\",\"nullable\":false},\
-             {\"name\":\"zip\",\"data_type\":\"UInt16\",\"nullable\":false}]},\"nullable\":false}\
-             ]},\
-             \"projection\":[0,1,4]}}",
-            serialized
-        );
     }
 }

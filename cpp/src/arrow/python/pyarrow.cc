@@ -24,6 +24,8 @@
 #include "arrow/tensor.h"
 #include "arrow/type.h"
 
+#include "arrow/python/common.h"
+#include "arrow/python/datetime.h"
 namespace {
 #include "arrow/python/pyarrow_api.h"
 }
@@ -31,7 +33,10 @@ namespace {
 namespace arrow {
 namespace py {
 
-int import_pyarrow() { return ::import_pyarrow__lib(); }
+int import_pyarrow() {
+  internal::InitDatetime();
+  return ::import_pyarrow__lib();
+}
 
 bool is_buffer(PyObject* buffer) { return ::pyarrow_is_buffer(buffer) != 0; }
 
@@ -108,6 +113,10 @@ PyObject* wrap_array(const std::shared_ptr<Array>& array) {
   return ::pyarrow_wrap_array(array);
 }
 
+PyObject* wrap_chunked_array(const std::shared_ptr<ChunkedArray>& array) {
+  return ::pyarrow_wrap_chunked_array(array);
+}
+
 bool is_tensor(PyObject* tensor) { return ::pyarrow_is_tensor(tensor) != 0; }
 
 Status unwrap_tensor(PyObject* tensor, std::shared_ptr<Tensor>* out) {
@@ -123,19 +132,42 @@ PyObject* wrap_tensor(const std::shared_ptr<Tensor>& tensor) {
   return ::pyarrow_wrap_tensor(tensor);
 }
 
-bool is_column(PyObject* column) { return ::pyarrow_is_column(column) != 0; }
+bool is_sparse_csr_matrix(PyObject* sparse_tensor) {
+  return ::pyarrow_is_sparse_csr_matrix(sparse_tensor) != 0;
+}
 
-Status unwrap_column(PyObject* column, std::shared_ptr<Column>* out) {
-  *out = ::pyarrow_unwrap_column(column);
+Status unwrap_sparse_csr_matrix(PyObject* sparse_tensor,
+                                std::shared_ptr<SparseCSRMatrix>* out) {
+  *out = ::pyarrow_unwrap_sparse_csr_matrix(sparse_tensor);
   if (*out) {
     return Status::OK();
   } else {
-    return Status::Invalid("Could not unwrap Column from the passed Python object.");
+    return Status::Invalid(
+        "Could not unwrap SparseCSRMatrix from the passed Python object.");
   }
 }
 
-PyObject* wrap_column(const std::shared_ptr<Column>& column) {
-  return ::pyarrow_wrap_column(column);
+PyObject* wrap_sparse_csr_matrix(const std::shared_ptr<SparseCSRMatrix>& sparse_tensor) {
+  return ::pyarrow_wrap_sparse_csr_matrix(sparse_tensor);
+}
+
+bool is_sparse_coo_tensor(PyObject* sparse_tensor) {
+  return ::pyarrow_is_sparse_coo_tensor(sparse_tensor) != 0;
+}
+
+Status unwrap_sparse_coo_tensor(PyObject* sparse_tensor,
+                                std::shared_ptr<SparseCOOTensor>* out) {
+  *out = ::pyarrow_unwrap_sparse_coo_tensor(sparse_tensor);
+  if (*out) {
+    return Status::OK();
+  } else {
+    return Status::Invalid(
+        "Could not unwrap SparseCOOTensor from the passed Python object.");
+  }
+}
+
+PyObject* wrap_sparse_coo_tensor(const std::shared_ptr<SparseCOOTensor>& sparse_tensor) {
+  return ::pyarrow_wrap_sparse_coo_tensor(sparse_tensor);
 }
 
 bool is_table(PyObject* table) { return ::pyarrow_is_table(table) != 0; }
@@ -168,5 +200,10 @@ PyObject* wrap_record_batch(const std::shared_ptr<RecordBatch>& batch) {
   return ::pyarrow_wrap_batch(batch);
 }
 
+namespace internal {
+
+int check_status(const Status& status) { return ::pyarrow_internal_check_status(status); }
+
+}  // namespace internal
 }  // namespace py
 }  // namespace arrow

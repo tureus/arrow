@@ -17,8 +17,8 @@
 
 //! The type_coercion optimizer rule ensures that all binary operators are operating on
 //! compatible types by adding explicit cast operations to expressions. For example,
-//! the operation `c_float + c_int` would be rewritten as `c_float + CAST(c_int AS float)`.
-//! This keeps the runtime query execution code much simpler.
+//! the operation `c_float + c_int` would be rewritten as `c_float + CAST(c_int AS
+//! float)`. This keeps the runtime query execution code much simpler.
 
 use std::sync::Arc;
 
@@ -74,6 +74,7 @@ impl OptimizerRule for TypeCoercionRule {
             LogicalPlan::TableScan { .. } => Ok(Arc::new(plan.clone())),
             LogicalPlan::EmptyRelation { .. } => Ok(Arc::new(plan.clone())),
             LogicalPlan::Limit { .. } => Ok(Arc::new(plan.clone())),
+            LogicalPlan::CreateExternalTable { .. } => Ok(Arc::new(plan.clone())),
             other => Err(ExecutionError::NotImplemented(format!(
                 "Type coercion optimizer rule does not support relation: {:?}",
                 other
@@ -98,7 +99,11 @@ fn rewrite_expr(expr: &Expr, schema: &Schema) -> Result<Expr> {
             let left_type = left.get_type(schema);
             let right_type = right.get_type(schema);
             if left_type == right_type {
-                Ok(expr.clone())
+                Ok(Expr::BinaryExpr {
+                    left: Arc::new(left),
+                    op: op.clone(),
+                    right: Arc::new(right),
+                })
             } else {
                 let super_type = utils::get_supertype(&left_type, &right_type)?;
                 Ok(Expr::BinaryExpr {
@@ -190,6 +195,20 @@ mod tests {
             DataType::Float32,
             DataType::Int32,
             "#0 Plus CAST(#1 AS Float32)",
+        );
+    }
+
+    #[test]
+    fn test_add_u32_i64() {
+        binary_cast_test(
+            DataType::UInt32,
+            DataType::Int64,
+            "CAST(#0 AS Int64) Plus #1",
+        );
+        binary_cast_test(
+            DataType::Int64,
+            DataType::UInt32,
+            "#0 Plus CAST(#1 AS Int64)",
         );
     }
 

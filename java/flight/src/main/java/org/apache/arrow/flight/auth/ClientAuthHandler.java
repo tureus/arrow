@@ -19,15 +19,36 @@ package org.apache.arrow.flight.auth;
 
 import java.util.Iterator;
 
+/**
+ * Implement authentication for Flight on the client side.
+ */
 public interface ClientAuthHandler {
+  /**
+   * Handle the initial handshake with the server.
+   * @param outgoing A channel to send data to the server.
+   * @param incoming An iterator of incoming data from the server.
+   */
+  void authenticate(ClientAuthSender outgoing, Iterator<byte[]> incoming);
 
-  public byte[] authenticate(ClientAuthSender outgoing, Iterator<byte[]> incoming);
+  /**
+   * Get the per-call authentication token.
+   */
+  byte[] getCallToken();
 
-  public interface ClientAuthSender {
+  /**
+   * A communication channel to the server during initial connection.
+   */
+  interface ClientAuthSender {
 
-    public void send(byte[] payload);
+    /**
+     * Send the server a message.
+     */
+    void send(byte[] payload);
 
-    public void onError(String message, Throwable cause);
+    /**
+     * Signal an error to the server and abort the authentication attempt.
+     */
+    void onError(Throwable cause);
 
   }
 

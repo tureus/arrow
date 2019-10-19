@@ -21,6 +21,7 @@ Utility functions for testing
 
 import contextlib
 import decimal
+import numpy as np
 import os
 import random
 
@@ -96,6 +97,10 @@ def randdecimal(precision, scale):
     )
 
 
+def random_ascii(length):
+    return bytes(np.random.randint(65, 123, size=length, dtype='i1'))
+
+
 def get_modified_env_with_pythonpath():
     # Prepend pyarrow root directory to PYTHONPATH
     env = os.environ.copy()
@@ -104,5 +109,9 @@ def get_modified_env_with_pythonpath():
     module_path = os.path.abspath(
         os.path.dirname(os.path.dirname(pa.__file__)))
 
-    env['PYTHONPATH'] = os.pathsep.join((module_path, existing_pythonpath))
+    if existing_pythonpath:
+        new_pythonpath = os.pathsep.join((module_path, existing_pythonpath))
+    else:
+        new_pythonpath = module_path
+    env['PYTHONPATH'] = new_pythonpath
     return env

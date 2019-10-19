@@ -22,7 +22,9 @@ set -e
 # overrides multibuild's default build_wheel
 function build_wheel {
     pip install -U pip
-    pip install setuptools_scm
+
+    # ARROW-5670: Python 3.5 can fail with HTTPS error in CMake build
+    pip install setuptools_scm requests
 
     # Include brew installed versions of flex and bison.
     # We need them to build Thrift. The ones that come with Xcode are too old.
@@ -111,6 +113,9 @@ function build_wheel {
       export BUILD_ARROW_GANDIVA=OFF
     fi
 
+    git submodule update --init
+    export ARROW_TEST_DATA=`pwd`/testing/data
+
     pushd cpp
     mkdir build
     pushd build
@@ -124,11 +129,24 @@ function build_wheel {
           -DARROW_PLASMA=ON \
           -DARROW_RPATH_ORIGIN=ON \
           -DARROW_PYTHON=ON \
+          -DARROW_WITH_BZ2=ON \
+          -DARROW_WITH_ZLIB=ON \
+          -DARROW_WITH_ZSTD=ON \
+          -DARROW_WITH_LZ4=ON \
+          -DARROW_WITH_SNAPPY=ON \
+          -DARROW_WITH_BROTLI=ON \
           -DARROW_PARQUET=ON \
           -DARROW_GANDIVA=${BUILD_ARROW_GANDIVA} \
-          -DARROW_ORC=ON \
+          -DARROW_ORC=OFF \
           -DBOOST_ROOT="$arrow_boost_dist" \
           -DBoost_NAMESPACE=arrow_boost \
+          -DARROW_FLIGHT=ON \
+          -DgRPC_SOURCE=SYSTEM \
+          -Dc-ares_SOURCE=BUNDLED \
+          -Dzlib_SOURCE=BUNDLED \
+          -DARROW_PROTOBUF_USE_SHARED=OFF \
+          -DOPENSSL_USE_STATIC_LIBS=ON  \
+          -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@1.1) \
           -DMAKE=make \
           ..
     make -j5
@@ -143,9 +161,10 @@ function build_wheel {
     unset ARROW_HOME
     unset PARQUET_HOME
 
+    export PYARROW_WITH_FLIGHT=1
     export PYARROW_WITH_PLASMA=1
     export PYARROW_WITH_PARQUET=1
-    export PYARROW_WITH_ORC=1
+    export PYARROW_WITH_ORC=0
     export PYARROW_WITH_JEMALLOC=1
     export PYARROW_WITH_PLASMA=1
     export PYARROW_BUNDLE_BOOST=1
@@ -162,37 +181,41 @@ function build_wheel {
     popd
 }
 
-# overrides multibuild's default install_run
-function install_run {
+function install_wheel {
     multibuild_dir=`realpath $MULTIBUILD_DIR`
 
     pushd $1  # enter arrow's directory
-
     wheelhouse="$PWD/python/dist"
 
     # Install compatible wheel
     pip install $(pip_opts) \
         $(python $multibuild_dir/supported_wheels.py $wheelhouse/*.whl)
 
-    # Runs tests on installed distribution from an empty directory
-    python --version
+    popd
+}
 
+function run_unit_tests {
+    pushd $1
+
+    # Install test dependencies
+    pip install $(pip_opts) -r python/requirements-test.txt
+
+    # Run pyarrow tests
+    pytest -rs --pyargs pyarrow
+
+    popd
+}
+
+function run_import_tests {
     # Test optional dependencies
     python -c "
 import sys
 import pyarrow
-import pyarrow.orc
 import pyarrow.parquet
 import pyarrow.plasma
 
 if sys.version_info.major > 2:
+    import pyarrow.flight
     import pyarrow.gandiva
 "
-
-    # Run pyarrow tests
-    pip install $(pip_opts) -r python/requirements-test.txt
-
-    py.test --pyargs pyarrow
-
-    popd
 }

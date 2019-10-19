@@ -17,12 +17,15 @@
 
 package org.apache.arrow.vector;
 
+import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
+
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.complex.impl.Float4ReaderImpl;
 import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.Float4Holder;
 import org.apache.arrow.vector.holders.NullableFloat4Holder;
 import org.apache.arrow.vector.types.Types.MinorType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
@@ -33,7 +36,7 @@ import io.netty.buffer.ArrowBuf;
  * float values which could be null. A validity buffer (bit vector) is
  * maintained to track which elements in the vector are null.
  */
-public class Float4Vector extends BaseFixedWidthVector {
+public final class Float4Vector extends BaseFixedWidthVector implements FloatingPointVector {
   public static final byte TYPE_WIDTH = 4;
   private final FieldReader reader;
 
@@ -57,7 +60,18 @@ public class Float4Vector extends BaseFixedWidthVector {
    * @param allocator allocator for memory management.
    */
   public Float4Vector(String name, FieldType fieldType, BufferAllocator allocator) {
-    super(name, allocator, fieldType, TYPE_WIDTH);
+    this(new Field(name, fieldType, null), allocator);
+  }
+
+  /**
+   * Instantiate a Float4Vector. This doesn't allocate any memory for
+   * the data in vector.
+   *
+   * @param field field materialized by this vector
+   * @param allocator allocator for memory management.
+   */
+  public Float4Vector(Field field, BufferAllocator allocator) {
+    super(field, allocator, TYPE_WIDTH);
     reader = new Float4ReaderImpl(Float4Vector.this);
   }
 
@@ -97,7 +111,7 @@ public class Float4Vector extends BaseFixedWidthVector {
    * @return element at given index
    */
   public float get(int index) throws IllegalStateException {
-    if (isSet(index) == 0) {
+    if (NULL_CHECKING_ENABLED && isSet(index) == 0) {
       throw new IllegalStateException("Value at index is null");
     }
     return valueBuffer.getFloat(index * TYPE_WIDTH);
@@ -132,35 +146,6 @@ public class Float4Vector extends BaseFixedWidthVector {
       return valueBuffer.getFloat(index * TYPE_WIDTH);
     }
   }
-
-  /**
-   * Copy a cell value from a particular index in source vector to a particular
-   * position in this vector.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from source vector
-   */
-  public void copyFrom(int fromIndex, int thisIndex, Float4Vector from) {
-    BitVectorHelper.setValidityBit(validityBuffer, thisIndex, from.isSet(fromIndex));
-    final float value = from.valueBuffer.getFloat(fromIndex * TYPE_WIDTH);
-    valueBuffer.setFloat(thisIndex * TYPE_WIDTH, value);
-  }
-
-  /**
-   * Same as {@link #copyFrom(int, int, Float4Vector)} except that
-   * it handles the case when the capacity of the vector needs to be expanded
-   * before copy.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from source vector
-   */
-  public void copyFromSafe(int fromIndex, int thisIndex, Float4Vector from) {
-    handleSafe(thisIndex);
-    copyFrom(fromIndex, thisIndex, from);
-  }
-
 
   /*----------------------------------------------------------------*
    |                                                                |
@@ -254,18 +239,6 @@ public class Float4Vector extends BaseFixedWidthVector {
   }
 
   /**
-   * Set the element at the given index to null.
-   *
-   * @param index   position of element
-   */
-  public void setNull(int index) {
-    handleSafe(index);
-    // not really needed to set the bit to 0 as long as
-    // the buffer always starts from 0.
-    BitVectorHelper.setValidityBit(validityBuffer, index, 0);
-  }
-
-  /**
    * Store the given value at a particular position in the vector. isSet indicates
    * whether the value is NULL or not.
    *
@@ -309,6 +282,20 @@ public class Float4Vector extends BaseFixedWidthVector {
     return buffer.getFloat(index * TYPE_WIDTH);
   }
 
+  @Override
+  public void setWithPossibleTruncate(int index, double value) {
+    set(index, (float) value);
+  }
+
+  @Override
+  public void setSafeWithPossibleTruncate(int index, double value) {
+    setSafe(index, (float) value);
+  }
+
+  @Override
+  public double getValueAsDouble(int index) {
+    return get(index);
+  }
 
   /*----------------------------------------------------------------*
    |                                                                |

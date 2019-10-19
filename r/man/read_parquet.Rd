@@ -2,22 +2,37 @@
 % Please edit documentation in R/parquet.R
 \name{read_parquet}
 \alias{read_parquet}
-\title{Read parquet file from disk}
+\title{Read a Parquet file}
 \usage{
-read_parquet(file, as_tibble = TRUE, use_threads = TRUE, ...)
+read_parquet(file, col_select = NULL, as_data_frame = TRUE,
+  props = ParquetReaderProperties$create(), ...)
 }
 \arguments{
-\item{file}{a file path}
+\item{file}{A character file name, raw vector, or an Arrow input stream}
 
-\item{as_tibble}{should the \link[=arrow__Table]{arrow::Table} be converted to a tibble.}
+\item{col_select}{A character vector of column names to keep, as in the
+"select" argument to \code{data.table::fread()}, or a
+\link[tidyselect:vars_select]{tidy selection specification}
+of columns, as used in \code{dplyr::select()}.}
 
-\item{use_threads}{Use threads when converting to a tibble, only relevant if \code{as_tibble} is \code{TRUE}}
+\item{as_data_frame}{Should the function return a \code{data.frame} or an
+\link[=Table]{arrow::Table}?}
 
-\item{...}{currently ignored}
+\item{props}{\link{ParquetReaderProperties}}
+
+\item{...}{Additional arguments passed to \code{ParquetFileReader$create()}}
 }
 \value{
-a \link[=arrow__Table]{arrow::Table}, or a data frame if \code{as_tibble} is \code{TRUE}.
+A \link[=Table]{arrow::Table}, or a \code{data.frame} if \code{as_data_frame} is
+\code{TRUE}.
 }
 \description{
-Read parquet file from disk
+'\href{https://parquet.apache.org/}{Parquet}' is a columnar storage file format.
+This function enables you to read Parquet files into R.
+}
+\examples{
+\donttest{
+df <- read_parquet(system.file("v0.7.1.parquet", package="arrow"))
+head(df)
+}
 }

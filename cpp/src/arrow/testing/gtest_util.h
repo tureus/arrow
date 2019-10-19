@@ -21,76 +21,106 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
-#include <limits>
 #include <memory>
-#include <random>
-#include <sstream>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include "arrow/array.h"
 #include "arrow/buffer.h"
 #include "arrow/builder.h"
-#include "arrow/memory_pool.h"
-#include "arrow/pretty_print.h"
-#include "arrow/record_batch.h"
+#include "arrow/result.h"
 #include "arrow/status.h"
-#include "arrow/type.h"
+#include "arrow/testing/util.h"
+#include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/bit-util.h"
-#include "arrow/util/logging.h"
+#include "arrow/util/bit_util.h"
 #include "arrow/util/macros.h"
+#include "arrow/util/stl.h"
 #include "arrow/util/visibility.h"
+
+namespace arrow {
+
+template <typename T>
+class Result;
+
+namespace internal {
+
+// Helpers for the ASSERT* macros below
+
+inline Status GenericToStatus(const Status& st) { return st; }
+
+template <typename T>
+inline Status GenericToStatus(const Result<T>& res) {
+  return res.status();
+}
+
+}  // namespace internal
+}  // namespace arrow
+
+// NOTE: failing must be inline in the macros below, to get correct file / line number
+// reporting on test failures.
 
 #define ASSERT_RAISES(ENUM, expr)                                                     \
   do {                                                                                \
-    ::arrow::Status s = (expr);                                                       \
-    if (!s.Is##ENUM()) {                                                              \
+    auto _res = (expr);                                                               \
+    ::arrow::Status _st = ::arrow::internal::GenericToStatus(_res);                   \
+    if (!_st.Is##ENUM()) {                                                            \
       FAIL() << "Expected '" ARROW_STRINGIFY(expr) "' to fail with " ARROW_STRINGIFY( \
                     ENUM) ", but got "                                                \
-             << s.ToString();                                                         \
+             << _st.ToString();                                                       \
     }                                                                                 \
   } while (false)
 
 #define ASSERT_RAISES_WITH_MESSAGE(ENUM, message, expr)                               \
   do {                                                                                \
-    ::arrow::Status s = (expr);                                                       \
-    if (!s.Is##ENUM()) {                                                              \
+    auto _res = (expr);                                                               \
+    ::arrow::Status _st = ::arrow::internal::GenericToStatus(_res);                   \
+    if (!_st.Is##ENUM()) {                                                            \
       FAIL() << "Expected '" ARROW_STRINGIFY(expr) "' to fail with " ARROW_STRINGIFY( \
                     ENUM) ", but got "                                                \
-             << s.ToString();                                                         \
+             << _st.ToString();                                                       \
     }                                                                                 \
-    ASSERT_EQ((message), s.ToString());                                               \
+    ASSERT_EQ((message), _st.ToString());                                             \
   } while (false)
 
-#define ASSERT_OK(expr)                                                      \
-  do {                                                                       \
-    ::arrow::Status _s = (expr);                                             \
-    if (!_s.ok()) {                                                          \
-      FAIL() << "'" ARROW_STRINGIFY(expr) "' failed with " << _s.ToString(); \
-    }                                                                        \
+#define ASSERT_OK(expr)                                                       \
+  do {                                                                        \
+    auto _res = (expr);                                                       \
+    ::arrow::Status _st = ::arrow::internal::GenericToStatus(_res);           \
+    if (!_st.ok()) {                                                          \
+      FAIL() << "'" ARROW_STRINGIFY(expr) "' failed with " << _st.ToString(); \
+    }                                                                         \
   } while (false)
 
 #define ASSERT_OK_NO_THROW(expr) ASSERT_NO_THROW(ASSERT_OK(expr))
 
-#define ARROW_EXPECT_OK(expr)   \
-  do {                          \
-    ::arrow::Status s = (expr); \
-    EXPECT_TRUE(s.ok());        \
+#define ARROW_EXPECT_OK(expr)                                       \
+  do {                                                              \
+    auto _res = (expr);                                             \
+    ::arrow::Status _st = ::arrow::internal::GenericToStatus(_res); \
+    EXPECT_TRUE(_st.ok());                                          \
   } while (false)
 
-#define ABORT_NOT_OK(s)                  \
-  do {                                   \
-    ::arrow::Status _s = (s);            \
-    if (ARROW_PREDICT_FALSE(!_s.ok())) { \
-      std::cerr << s.ToString() << "\n"; \
-      std::abort();                      \
-    }                                    \
+#define ABORT_NOT_OK(expr)                                          \
+  do {                                                              \
+    auto _res = (expr);                                             \
+    ::arrow::Status _st = ::arrow::internal::GenericToStatus(_res); \
+    if (ARROW_PREDICT_FALSE(!_st.ok())) {                           \
+      _st.Abort();                                                  \
+    }                                                               \
   } while (false);
+
+#define ASSERT_OK_AND_ASSIGN_IMPL(status_name, lhs, rexpr) \
+  auto status_name = (rexpr);                              \
+  ARROW_EXPECT_OK(status_name.status());                   \
+  lhs = std::move(status_name).ValueOrDie();
+
+#define ASSERT_OK_AND_ASSIGN(lhs, rexpr)                                              \
+  ASSERT_OK_AND_ASSIGN_IMPL(ARROW_ASSIGN_OR_RAISE_NAME(_error_or_value, __COUNTER__), \
+                            lhs, rexpr);
 
 namespace arrow {
 
@@ -101,8 +131,15 @@ typedef ::testing::Types<UInt8Type, UInt16Type, UInt32Type, UInt64Type, Int8Type
                          Int16Type, Int32Type, Int64Type, FloatType, DoubleType>
     NumericArrowTypes;
 
+typedef ::testing::Types<FloatType, DoubleType> RealArrowTypes;
+
+typedef testing::Types<UInt8Type, UInt16Type, UInt32Type, UInt64Type, Int8Type, Int16Type,
+                       Int32Type, Int64Type>
+    IntegralArrowTypes;
+
+class Array;
 class ChunkedArray;
-class Column;
+class RecordBatch;
 class Table;
 
 namespace compute {
@@ -113,22 +150,14 @@ using Datum = compute::Datum;
 
 using ArrayVector = std::vector<std::shared_ptr<Array>>;
 
-#define ASSERT_PP_EQUAL(LEFT, RIGHT)                                                   \
-  do {                                                                                 \
-    if (!(LEFT).Equals((RIGHT))) {                                                     \
-      std::stringstream pp_result;                                                     \
-      std::stringstream pp_expected;                                                   \
-                                                                                       \
-      ARROW_EXPECT_OK(PrettyPrint(RIGHT, 0, &pp_result));                              \
-      ARROW_EXPECT_OK(PrettyPrint(LEFT, 0, &pp_expected));                             \
-      FAIL() << "Got: \n" << pp_result.str() << "\nExpected: \n" << pp_expected.str(); \
-    }                                                                                  \
-  } while (false)
+#define ASSERT_ARRAYS_EQUAL(lhs, rhs) AssertArraysEqual((lhs), (rhs))
+#define ASSERT_BATCHES_EQUAL(lhs, rhs) AssertBatchesEqual((lhs), (rhs))
 
-#define ASSERT_ARRAYS_EQUAL(lhs, rhs) ASSERT_PP_EQUAL(lhs, rhs)
-#define ASSERT_RECORD_BATCHES_EQUAL(lhs, rhs) ASSERT_PP_EQUAL(lhs, rhs)
-
-ARROW_EXPORT void AssertArraysEqual(const Array& expected, const Array& actual);
+// If verbose is true, then the arrays will be pretty printed
+ARROW_EXPORT void AssertArraysEqual(const Array& expected, const Array& actual,
+                                    bool verbose = false);
+ARROW_EXPORT void AssertBatchesEqual(const RecordBatch& expected,
+                                     const RecordBatch& actual);
 ARROW_EXPORT void AssertChunkedEqual(const ChunkedArray& expected,
                                      const ChunkedArray& actual);
 ARROW_EXPORT void AssertChunkedEqual(const ChunkedArray& actual,
@@ -139,7 +168,6 @@ ARROW_EXPORT void AssertBufferEqual(const Buffer& buffer, const std::string& exp
 ARROW_EXPORT void AssertBufferEqual(const Buffer& buffer, const Buffer& expected);
 ARROW_EXPORT void AssertSchemaEqual(const Schema& lhs, const Schema& rhs);
 
-ARROW_EXPORT void PrintColumn(const Column& col, std::stringstream* ss);
 ARROW_EXPORT void AssertTablesEqual(const Table& expected, const Table& actual,
                                     bool same_chunk_layout = true);
 
@@ -176,19 +204,6 @@ void FinishAndCheckPadding(BuilderType* builder, std::shared_ptr<Array>* out) {
 
 #define DECL_TYPE() typedef typename TestFixture::Type Type;
 
-#define ASSERT_BATCHES_EQUAL(LEFT, RIGHT)    \
-  do {                                       \
-    if (!(LEFT).ApproxEquals(RIGHT)) {       \
-      std::stringstream ss;                  \
-      ss << "Left:\n";                       \
-      ASSERT_OK(PrettyPrint(LEFT, 0, &ss));  \
-                                             \
-      ss << "\nRight:\n";                    \
-      ASSERT_OK(PrettyPrint(RIGHT, 0, &ss)); \
-      FAIL() << ss.str();                    \
-    }                                        \
-  } while (false)
-
 // ArrayFromJSON: construct an Array from a simple JSON representation
 
 ARROW_EXPORT
@@ -201,7 +216,8 @@ template <typename TYPE, typename C_TYPE = typename TYPE::c_type>
 void ArrayFromVector(const std::shared_ptr<DataType>& type,
                      const std::vector<bool>& is_valid, const std::vector<C_TYPE>& values,
                      std::shared_ptr<Array>* out) {
-  DCHECK_EQ(TYPE::type_id, type->id())
+  auto type_id = TYPE::type_id;
+  ASSERT_EQ(type_id, type->id())
       << "template parameter and concrete DataType instance don't agree";
 
   std::unique_ptr<ArrayBuilder> builder_ptr;
@@ -222,7 +238,8 @@ void ArrayFromVector(const std::shared_ptr<DataType>& type,
 template <typename TYPE, typename C_TYPE = typename TYPE::c_type>
 void ArrayFromVector(const std::shared_ptr<DataType>& type,
                      const std::vector<C_TYPE>& values, std::shared_ptr<Array>* out) {
-  DCHECK_EQ(TYPE::type_id, type->id())
+  auto type_id = TYPE::type_id;
+  ASSERT_EQ(type_id, type->id())
       << "template parameter and concrete DataType instance don't agree";
 
   std::unique_ptr<ArrayBuilder> builder_ptr;
@@ -259,7 +276,7 @@ void ChunkedArrayFromVector(const std::shared_ptr<DataType>& type,
                             const std::vector<std::vector<C_TYPE>>& values,
                             std::shared_ptr<ChunkedArray>* out) {
   ArrayVector chunks;
-  DCHECK_EQ(is_valid.size(), values.size());
+  ASSERT_EQ(is_valid.size(), values.size());
   for (size_t i = 0; i < values.size(); ++i) {
     std::shared_ptr<Array> array;
     ArrayFromVector<TYPE, C_TYPE>(type, is_valid[i], values[i], &array);
@@ -329,5 +346,26 @@ void AssertSortedEquals(std::vector<T> u, std::vector<T> v) {
   std::sort(v.begin(), v.end());
   ASSERT_EQ(u, v);
 }
+
+// A RAII-style object that switches to a new locale, and switches back
+// to the old locale when going out of scope.  Doesn't do anything if the
+// new locale doesn't exist on the local machine.
+// ATTENTION: may crash with an assertion failure on Windows debug builds.
+// See ARROW-6108, also https://gerrit.libreoffice.org/#/c/54110/
+class ARROW_EXPORT LocaleGuard {
+ public:
+  explicit LocaleGuard(const char* new_locale);
+  ~LocaleGuard();
+
+ protected:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+#ifndef ARROW_LARGE_MEMORY_TESTS
+#define LARGE_MEMORY_TEST(name) DISABLED_##name
+#else
+#define LARGE_MEMORY_TEST(name) name
+#endif
 
 }  // namespace arrow

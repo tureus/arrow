@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using Apache.Arrow.Ipc;
+using Apache.Arrow.Memory;
 using System;
 using System.IO;
 using System.Threading;
@@ -48,23 +49,64 @@ namespace Apache.Arrow.Tests
             Assert.Equal(0, stream.Position);
         }
 
-        [Fact]
-        public async Task ReadRecordBatch_Memory()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Ctor_MemoryPool_AllocatesFromPool(bool shouldLeaveOpen)
+        {
+            RecordBatch originalBatch = TestData.CreateSampleRecordBatch(length: 100);
+
+            using (MemoryStream stream = new MemoryStream())
+            {
+                ArrowStreamWriter writer = new ArrowStreamWriter(stream, originalBatch.Schema);
+                await writer.WriteRecordBatchAsync(originalBatch);
+                await writer.WriteEndAsync();
+
+                stream.Position = 0;
+
+                var memoryPool = new TestMemoryAllocator();
+                ArrowStreamReader reader = new ArrowStreamReader(stream, memoryPool, shouldLeaveOpen);
+                reader.ReadNextRecordBatch();
+
+                Assert.Equal(1, memoryPool.Statistics.Allocations);
+                Assert.True(memoryPool.Statistics.BytesAllocated > 0);
+
+                reader.Dispose();
+
+                if (shouldLeaveOpen)
+                {
+                    Assert.True(stream.Position > 0);
+                }
+                else
+                {
+                    Assert.Throws<ObjectDisposedException>(() => stream.Position);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReadRecordBatch_Memory(bool writeEnd)
         {
             await TestReaderFromMemory((reader, originalBatch) =>
             {
                 ArrowReaderVerifier.VerifyReader(reader, originalBatch);
                 return Task.CompletedTask;
-            });
+            }, writeEnd);
         }
 
-        [Fact]
-        public async Task ReadRecordBatchAsync_Memory()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReadRecordBatchAsync_Memory(bool writeEnd)
         {
-            await TestReaderFromMemory(ArrowReaderVerifier.VerifyReaderAsync);
+            await TestReaderFromMemory(ArrowReaderVerifier.VerifyReaderAsync, writeEnd);
         }
 
-        private static async Task TestReaderFromMemory(Func<ArrowStreamReader, RecordBatch, Task> verificationFunc)
+        private static async Task TestReaderFromMemory(
+            Func<ArrowStreamReader, RecordBatch, Task> verificationFunc,
+            bool writeEnd)
         {
             RecordBatch originalBatch = TestData.CreateSampleRecordBatch(length: 100);
 
@@ -73,6 +115,10 @@ namespace Apache.Arrow.Tests
             {
                 ArrowStreamWriter writer = new ArrowStreamWriter(stream, originalBatch.Schema);
                 await writer.WriteRecordBatchAsync(originalBatch);
+                if (writeEnd)
+                {
+                    await writer.WriteEndAsync();
+                }
                 buffer = stream.GetBuffer();
             }
 
@@ -80,23 +126,29 @@ namespace Apache.Arrow.Tests
             await verificationFunc(reader, originalBatch);
         }
 
-        [Fact]
-        public async Task ReadRecordBatch_Stream()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReadRecordBatch_Stream(bool writeEnd)
         {
             await TestReaderFromStream((reader, originalBatch) =>
             {
                 ArrowReaderVerifier.VerifyReader(reader, originalBatch);
                 return Task.CompletedTask;
-            });
+            }, writeEnd);
         }
 
-        [Fact]
-        public async Task ReadRecordBatchAsync_Stream()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReadRecordBatchAsync_Stream(bool writeEnd)
         {
-            await TestReaderFromStream(ArrowReaderVerifier.VerifyReaderAsync);
+            await TestReaderFromStream(ArrowReaderVerifier.VerifyReaderAsync, writeEnd);
         }
 
-        private static async Task TestReaderFromStream(Func<ArrowStreamReader, RecordBatch, Task> verificationFunc)
+        private static async Task TestReaderFromStream(
+            Func<ArrowStreamReader, RecordBatch, Task> verificationFunc,
+            bool writeEnd)
         {
             RecordBatch originalBatch = TestData.CreateSampleRecordBatch(length: 100);
 
@@ -104,6 +156,10 @@ namespace Apache.Arrow.Tests
             {
                 ArrowStreamWriter writer = new ArrowStreamWriter(stream, originalBatch.Schema);
                 await writer.WriteRecordBatchAsync(originalBatch);
+                if (writeEnd)
+                {
+                    await writer.WriteEndAsync();
+                }
 
                 stream.Position = 0;
 
@@ -140,6 +196,7 @@ namespace Apache.Arrow.Tests
             {
                 ArrowStreamWriter writer = new ArrowStreamWriter(stream, originalBatch.Schema);
                 await writer.WriteRecordBatchAsync(originalBatch);
+                await writer.WriteEndAsync();
 
                 stream.Position = 0;
 

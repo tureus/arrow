@@ -23,28 +23,12 @@
 
 #include <arrow-glib/array.hpp>
 #include <arrow-glib/error.hpp>
+#include <arrow-glib/field.hpp>
+#include <arrow-glib/internal-index.hpp>
 #include <arrow-glib/record-batch.hpp>
 #include <arrow-glib/schema.hpp>
-#include <arrow-glib/field.hpp>
 
 #include <sstream>
-
-static inline bool
-garrow_record_batch_adjust_index(const std::shared_ptr<arrow::RecordBatch> arrow_record_batch,
-                                 gint &i)
-{
-  auto n_columns = arrow_record_batch->num_columns();
-  if (i < 0) {
-    i += n_columns;
-    if (i < 0) {
-      return false;
-    }
-  }
-  if (i >= n_columns) {
-    return false;
-  }
-  return true;
-}
 
 G_BEGIN_DECLS
 
@@ -163,17 +147,26 @@ garrow_record_batch_new(GArrowSchema *schema,
                         GList *columns,
                         GError **error)
 {
+  const gchar *tag = "[record-batch][new]";
+
   std::vector<std::shared_ptr<arrow::Array>> arrow_columns;
   for (GList *node = columns; node; node = node->next) {
     GArrowArray *column = GARROW_ARRAY(node->data);
     arrow_columns.push_back(garrow_array_get_raw(column));
   }
 
+  const auto &arrow_schema = garrow_schema_get_raw(schema);
+  if (arrow_schema->num_fields() != static_cast<int>(arrow_columns.size())) {
+    auto status =
+      arrow::Status::Invalid("Number of columns did not match schema");
+    garrow_error_check(error, status, tag);
+    return NULL;
+  }
+
   auto arrow_record_batch =
-    arrow::RecordBatch::Make(garrow_schema_get_raw(schema),
-                             n_rows, arrow_columns);
+    arrow::RecordBatch::Make(arrow_schema, n_rows, arrow_columns);
   auto status = arrow_record_batch->Validate();
-  if (garrow_error_check(error, status, "[record-batch][new]")) {
+  if (garrow_error_check(error, status, tag)) {
     return garrow_record_batch_new_raw(&arrow_record_batch);
   } else {
     return NULL;
@@ -215,7 +208,7 @@ garrow_record_batch_get_schema(GArrowRecordBatch *record_batch)
 }
 
 /**
- * garrow_record_batch_get_column:
+ * garrow_record_batch_get_column_data:
  * @record_batch: A #GArrowRecordBatch.
  * @i: The index of the target column. If it's negative, index is
  *   counted backward from the end of the columns. `-1` means the last
@@ -223,39 +216,19 @@ garrow_record_batch_get_schema(GArrowRecordBatch *record_batch)
  *
  * Returns: (transfer full) (nullable): The i-th column in the record batch
  *   on success, %NULL on out of index.
+ *
+ * Since: 1.0.0
  */
 GArrowArray *
-garrow_record_batch_get_column(GArrowRecordBatch *record_batch,
-                               gint i)
+garrow_record_batch_get_column_data(GArrowRecordBatch *record_batch,
+                                    gint i)
 {
-  const auto arrow_record_batch = garrow_record_batch_get_raw(record_batch);
-  if (!garrow_record_batch_adjust_index(arrow_record_batch, i)) {
+  const auto &arrow_record_batch = garrow_record_batch_get_raw(record_batch);
+  if (!garrow_internal_index_adjust(i, arrow_record_batch->num_columns())) {
     return NULL;
   }
   auto arrow_column = arrow_record_batch->column(i);
   return garrow_array_new_raw(&arrow_column);
-}
-
-/**
- * garrow_record_batch_get_columns:
- * @record_batch: A #GArrowRecordBatch.
- *
- * Returns: (element-type GArrowArray) (transfer full):
- *   The columns in the record batch.
- */
-GList *
-garrow_record_batch_get_columns(GArrowRecordBatch *record_batch)
-{
-  const auto arrow_record_batch = garrow_record_batch_get_raw(record_batch);
-
-  GList *columns = NULL;
-  for (int i = 0; i < arrow_record_batch->num_columns(); ++i) {
-    auto arrow_column = arrow_record_batch->column(i);
-    GArrowArray *column = garrow_array_new_raw(&arrow_column);
-    columns = g_list_prepend(columns, column);
-  }
-
-  return g_list_reverse(columns);
 }
 
 /**
@@ -272,8 +245,8 @@ const gchar *
 garrow_record_batch_get_column_name(GArrowRecordBatch *record_batch,
                                     gint i)
 {
-  const auto arrow_record_batch = garrow_record_batch_get_raw(record_batch);
-  if (!garrow_record_batch_adjust_index(arrow_record_batch, i)) {
+  const auto &arrow_record_batch = garrow_record_batch_get_raw(record_batch);
+  if (!garrow_internal_index_adjust(i, arrow_record_batch->num_columns())) {
     return NULL;
   }
   return arrow_record_batch->column_name(i).c_str();

@@ -21,14 +21,17 @@
 
 
 import io
+import os
 
 
 INTEGER_TYPES = ['UInt8', 'Int8', 'UInt16', 'Int16',
                  'UInt32', 'Int32', 'UInt64', 'Int64']
 FLOATING_TYPES = ['Float', 'Double']
 NUMERIC_TYPES = ['Boolean'] + INTEGER_TYPES + FLOATING_TYPES
+STRING_TYPES = ['String', 'LargeString']
 
-DATE_TIME_TYPES = ['Date32', 'Date64', 'Time32', 'Time64', 'Timestamp']
+DATE_TIME_TYPES = ['Date32', 'Date64', 'Time32', 'Time64', 'Timestamp',
+                   'Duration']
 
 
 def _format_type(name):
@@ -64,18 +67,17 @@ class CastCodeGenerator(object):
 
 
 CAST_GENERATORS = [
-    CastCodeGenerator('Null', NUMERIC_TYPES + DATE_TIME_TYPES),
-    CastCodeGenerator('Boolean', NUMERIC_TYPES),
-    CastCodeGenerator('UInt8', NUMERIC_TYPES),
-    CastCodeGenerator('Int8', NUMERIC_TYPES),
-    CastCodeGenerator('UInt16', NUMERIC_TYPES),
-    CastCodeGenerator('Int16', NUMERIC_TYPES),
-    CastCodeGenerator('UInt32', NUMERIC_TYPES),
-    CastCodeGenerator('UInt64', NUMERIC_TYPES),
-    CastCodeGenerator('Int32', NUMERIC_TYPES),
-    CastCodeGenerator('Int64', NUMERIC_TYPES),
-    CastCodeGenerator('Float', NUMERIC_TYPES),
-    CastCodeGenerator('Double', NUMERIC_TYPES),
+    CastCodeGenerator('Boolean', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('UInt8', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Int8', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('UInt16', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Int16', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('UInt32', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('UInt64', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Int32', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Int64', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Float', NUMERIC_TYPES + STRING_TYPES),
+    CastCodeGenerator('Double', NUMERIC_TYPES + STRING_TYPES),
     CastCodeGenerator('Date32', ['Date64']),
     CastCodeGenerator('Date64', ['Date32']),
     CastCodeGenerator('Time32', ['Time32', 'Time64'],
@@ -84,8 +86,11 @@ CAST_GENERATORS = [
                       parametric=True),
     CastCodeGenerator('Timestamp', ['Date32', 'Date64', 'Timestamp'],
                       parametric=True),
+    CastCodeGenerator('Duration', ['Duration'], parametric=True),
     CastCodeGenerator('Binary', ['String']),
+    CastCodeGenerator('LargeBinary', ['LargeString']),
     CastCodeGenerator('String', NUMERIC_TYPES + ['Timestamp']),
+    CastCodeGenerator('LargeString', NUMERIC_TYPES + ['Timestamp']),
     CastCodeGenerator('Dictionary',
                       INTEGER_TYPES + FLOATING_TYPES + DATE_TIME_TYPES +
                       ['Null', 'Binary', 'FixedSizeBinary', 'String',
@@ -126,8 +131,10 @@ def write_file_with_preamble(path, code):
 
 
 def write_files():
+    here = os.path.abspath(os.path.dirname(__file__))
     cast_code = generate_cast_code()
-    write_file_with_preamble('cast-codegen-internal.h', cast_code)
+    write_file_with_preamble(os.path.join(here, 'cast_codegen_internal.h'),
+                             cast_code)
 
 
 if __name__ == '__main__':

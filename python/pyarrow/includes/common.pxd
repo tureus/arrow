@@ -29,6 +29,10 @@ from libcpp.unordered_set cimport unordered_set
 from cpython cimport PyObject
 cimport cpython
 
+
+cdef extern from * namespace "std" nogil:
+    cdef shared_ptr[T] static_pointer_cast[T, U](shared_ptr[U])
+
 cdef extern from "arrow/python/platform.h":
     pass
 
@@ -42,6 +46,7 @@ cdef extern from "numpy/halffloat.h":
 cdef extern from "arrow/api.h" namespace "arrow" nogil:
     # We can later add more of the common status factory methods as needed
     cdef CStatus CStatus_OK "arrow::Status::OK"()
+
     cdef CStatus CStatus_Invalid "arrow::Status::Invalid"()
     cdef CStatus CStatus_NotImplemented \
         "arrow::Status::NotImplemented"(const c_string& msg)
@@ -62,12 +67,17 @@ cdef extern from "arrow/api.h" namespace "arrow" nogil:
         c_bool IsNotImplemented()
         c_bool IsTypeError()
         c_bool IsCapacityError()
+        c_bool IsIndexError()
         c_bool IsSerializationError()
-        c_bool IsPythonError()
-        c_bool IsPlasmaObjectExists()
-        c_bool IsPlasmaObjectNonexistent()
-        c_bool IsPlasmaStoreFull()
 
+cdef extern from "arrow/result.h" namespace "arrow" nogil:
+    cdef cppclass CResult "arrow::Result"[T]:
+        c_bool ok()
+        CStatus status()
+        T operator*()
+
+cdef extern from "arrow/python/common.h" namespace "arrow::py":
+    T GetResultValue[T](CResult[T]) except *
 
 cdef inline object PyObject_to_object(PyObject* o):
     # Cast to "object" increments reference count

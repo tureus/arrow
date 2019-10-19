@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using Apache.Arrow.Ipc;
+using Apache.Arrow.Memory;
 using System;
 using System.IO;
 using System.Threading.Tasks;
@@ -45,6 +46,40 @@ namespace Apache.Arrow.Tests
             var stream = new MemoryStream();
             new ArrowFileReader(stream, leaveOpen: true).Dispose();
             Assert.Equal(0, stream.Position);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Ctor_MemoryPool_AllocatesFromPool(bool shouldLeaveOpen)
+        {
+            RecordBatch originalBatch = TestData.CreateSampleRecordBatch(length: 100);
+
+            using (MemoryStream stream = new MemoryStream())
+            {
+                ArrowFileWriter writer = new ArrowFileWriter(stream, originalBatch.Schema);
+                await writer.WriteRecordBatchAsync(originalBatch);
+                await writer.WriteEndAsync();
+                stream.Position = 0;
+
+                var memoryPool = new TestMemoryAllocator();
+                ArrowFileReader reader = new ArrowFileReader(stream, memoryPool, leaveOpen: shouldLeaveOpen);
+                reader.ReadNextRecordBatch();
+
+                Assert.Equal(1, memoryPool.Statistics.Allocations);
+                Assert.True(memoryPool.Statistics.BytesAllocated > 0);
+
+                reader.Dispose();
+
+                if (shouldLeaveOpen)
+                {
+                    Assert.True(stream.Position > 0);
+                }
+                else
+                {
+                    Assert.Throws<ObjectDisposedException>(() => stream.Position);
+                }
+            }
         }
 
         [Fact]
@@ -86,7 +121,7 @@ namespace Apache.Arrow.Tests
             {
                 ArrowFileWriter writer = new ArrowFileWriter(stream, originalBatch.Schema);
                 await writer.WriteRecordBatchAsync(originalBatch);
-                await writer.WriteFooterAsync();
+                await writer.WriteEndAsync();
                 stream.Position = 0;
 
                 ArrowFileReader reader = new ArrowFileReader(stream);
@@ -105,7 +140,7 @@ namespace Apache.Arrow.Tests
                 ArrowFileWriter writer = new ArrowFileWriter(stream, originalBatch1.Schema);
                 await writer.WriteRecordBatchAsync(originalBatch1);
                 await writer.WriteRecordBatchAsync(originalBatch2);
-                await writer.WriteFooterAsync();
+                await writer.WriteEndAsync();
                 stream.Position = 0;
 
                 // the recordbatches by index are in reverse order - back to front.

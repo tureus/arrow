@@ -15,9 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu:18.04
+ARG FROM=ubuntu:bionic
+FROM ${FROM}
 
-ENV DEBIAN_FRONTEND noninteractive
+COPY qemu-* /usr/bin/
+
+RUN \
+  echo "debconf debconf/frontend select Noninteractive" | \
+    debconf-set-selections
 
 ARG DEBUG
 
@@ -25,12 +30,10 @@ RUN \
   quiet=$([ "${DEBUG}" = "yes" ] || echo "-qq") && \
   apt update ${quiet} && \
   apt install -y -V ${quiet} \
-    autoconf-archive \
     bison \
     build-essential \
     clang-7 \
     cmake \
-    debhelper\
     devscripts \
     flex \
     git \
@@ -43,18 +46,26 @@ RUN \
     libgirepository1.0-dev \
     libglib2.0-doc \
     libgoogle-glog-dev \
+    libgtest-dev \
     liblz4-dev \
-    libprotobuf-dev \
-    libprotoc-dev \
     libre2-dev \
     libsnappy-dev \
+    libssl-dev \
     libzstd-dev \
     lsb-release \
-    nvidia-cuda-toolkit \
+    ninja-build \
     pkg-config \
-    protobuf-compiler \
     python3-dev \
     python3-numpy \
-    rapidjson-dev && \
+    python3-pip \
+    rapidjson-dev \
+    tzdata && \
+  if apt list | grep '^nvidia-cuda-toolkit/'; then \
+    apt install -y -V ${quiet} nvidia-cuda-toolkit; \
+  fi && \
+  apt install -y -V -t bionic-backports ${quiet} \
+    debhelper && \
+  pip3 install --upgrade meson && \
+  ln -s /usr/local/bin/meson /usr/bin/ && \
   apt clean && \
   rm -rf /var/lib/apt/lists/*

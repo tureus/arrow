@@ -17,7 +17,15 @@
 
 @echo on
 
-conda update -y -q conda
+@rem Avoid picking up AppVeyor-installed OpenSSL (linker errors with gRPC)
+@rem XXX Perhaps there is a smarter way of solving this issue?
+rd /s /q C:\OpenSSL-Win32
+rd /s /q C:\OpenSSL-Win64
+rd /s /q C:\OpenSSL-v11-Win32
+rd /s /q C:\OpenSSL-v11-Win64
+rd /s /q C:\OpenSSL-v111-Win32
+rd /s /q C:\OpenSSL-v111-Win64
+
 conda config --set auto_update_conda false
 conda info -a
 
@@ -48,7 +56,10 @@ if "%USE_CLCACHE%" == "true" (
     clcache -M 500000000
     clcache -c
     clcache -s
-    set CLCACHE_SERVER=1
-    set CLCACHE_HARDLINK=1
     powershell.exe -Command "Start-Process clcache-server"
+)
+
+if "%ARROW_S3%" == "ON" (
+    @rem Download Minio somewhere on PATH, for unit tests
+    appveyor DownloadFile https://dl.min.io/server/minio/release/windows-amd64/minio.exe -FileName C:\Windows\Minio.exe || exit /B
 )

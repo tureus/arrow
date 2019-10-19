@@ -33,9 +33,9 @@ import sys
 import jira.client
 
 # ASF JIRA username
-JIRA_USERNAME = os.environ.get("JIRA_USERNAME")
+JIRA_USERNAME = os.environ["APACHE_JIRA_USERNAME"]
 # ASF JIRA password
-JIRA_PASSWORD = os.environ.get("JIRA_PASSWORD")
+JIRA_PASSWORD = os.environ["APACHE_JIRA_PASSWORD"]
 
 JIRA_API_BASE = "https://issues.apache.org/jira"
 
@@ -152,7 +152,7 @@ def append_changelog(version, changelog_path):
     print(''.join(old_changelog[19:]), file=result)
 
     with open(changelog_path, 'w') as f:
-        f.write(result.getvalue())
+        f.write(result.getvalue().rstrip() + '\n')
 
 
 if __name__ == '__main__':

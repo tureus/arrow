@@ -22,13 +22,22 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 
+#include "arrow/status.h"
 #include "arrow/util/macros.h"
 #include "arrow/util/string_view.h"
 #include "arrow/util/visibility.h"
 
 namespace arrow {
 namespace util {
+
+// Convert a UTF8 string to a wstring (either UTF16 or UTF32, depending
+// on the wchar_t width).
+ARROW_EXPORT Status UTF8ToWideString(const std::string& source, std::wstring* out);
+
+// Similarly, convert a wstring to a UTF8 string.
+ARROW_EXPORT Status WideStringToUTF8(const std::wstring& source, std::string* out);
 
 namespace internal {
 
@@ -69,9 +78,7 @@ static inline uint16_t ValidateOneUTF8Byte(uint8_t byte, uint16_t state) {
   return utf8_large_table[state + byte];
 }
 
-#ifndef NDEBUG
 ARROW_EXPORT void CheckUTF8Initialized();
-#endif
 
 }  // namespace internal
 
@@ -164,6 +171,10 @@ inline bool ValidateUTF8(const util::string_view& str) {
 
   return ValidateUTF8(data, length);
 }
+
+// Skip UTF8 byte order mark, if any.
+ARROW_EXPORT
+Status SkipUTF8BOM(const uint8_t* data, int64_t size, const uint8_t** out);
 
 }  // namespace util
 }  // namespace arrow

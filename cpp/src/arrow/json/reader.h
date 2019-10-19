@@ -15,23 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#ifndef ARROW_JSON_READER_H
-#define ARROW_JSON_READER_H
+#pragma once
 
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
-#include "arrow/json/options.h"  // IWYU pragma: keep
-#include "arrow/json/parser.h"   // IWYU pragma: keep
+#include "arrow/json/options.h"
 #include "arrow/status.h"
+#include "arrow/util/macros.h"
 #include "arrow/util/visibility.h"
 
 namespace arrow {
 
+class Buffer;
 class MemoryPool;
 class Table;
+class RecordBatch;
+class Array;
+class DataType;
 
 namespace io {
 class InputStream;
@@ -39,13 +39,17 @@ class InputStream;
 
 namespace json {
 
+/// A class that reads an entire JSON file into a Arrow Table
+///
+/// The file is expected to consist of individual line-separated JSON objects
 class ARROW_EXPORT TableReader {
  public:
   virtual ~TableReader() = default;
 
+  /// Read the entire JSON file and convert it to a Arrow Table
   virtual Status Read(std::shared_ptr<Table>* out) = 0;
 
-  // XXX pass optional schema?
+  /// Create a TableReader instance
   static Status Make(MemoryPool* pool, std::shared_ptr<io::InputStream> input,
                      const ReadOptions&, const ParseOptions&,
                      std::shared_ptr<TableReader>* out);
@@ -54,7 +58,10 @@ class ARROW_EXPORT TableReader {
 ARROW_EXPORT Status ParseOne(ParseOptions options, std::shared_ptr<Buffer> json,
                              std::shared_ptr<RecordBatch>* out);
 
+/// \brief convert an Array produced by BlockParser into an Array of out_type
+ARROW_EXPORT Status Convert(const std::shared_ptr<DataType>& out_type,
+                            const std::shared_ptr<Array>& in,
+                            std::shared_ptr<Array>* out);
+
 }  // namespace json
 }  // namespace arrow
-
-#endif  // ARROW_JSON_READER_H

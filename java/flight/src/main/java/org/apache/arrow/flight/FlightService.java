@@ -17,32 +17,39 @@
 
 package org.apache.arrow.flight;
 
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import org.apache.arrow.flight.FlightProducer.ServerStreamListener;
+import org.apache.arrow.flight.FlightServerMiddleware.Key;
+import org.apache.arrow.flight.auth.AuthConstants;
 import org.apache.arrow.flight.auth.ServerAuthHandler;
 import org.apache.arrow.flight.auth.ServerAuthWrapper;
+import org.apache.arrow.flight.grpc.ContextPropagatingExecutorService;
+import org.apache.arrow.flight.grpc.ServerInterceptorAdapter;
+import org.apache.arrow.flight.grpc.StatusUtils;
 import org.apache.arrow.flight.impl.Flight;
-import org.apache.arrow.flight.impl.Flight.ActionType;
-import org.apache.arrow.flight.impl.Flight.Empty;
-import org.apache.arrow.flight.impl.Flight.FlightGetInfo;
-import org.apache.arrow.flight.impl.Flight.HandshakeRequest;
-import org.apache.arrow.flight.impl.Flight.HandshakeResponse;
-import org.apache.arrow.flight.impl.Flight.PutResult;
-import org.apache.arrow.flight.impl.Flight.Result;
 import org.apache.arrow.flight.impl.FlightServiceGrpc.FlightServiceImplBase;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Preconditions;
-
+import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
+import io.netty.buffer.ArrowBuf;
 
+/**
+ * GRPC service implementation for a flight server.
+ */
 class FlightService extends FlightServiceImplBase {
 
   private static final Logger logger = LoggerFactory.getLogger(FlightService.class);
@@ -51,63 +58,87 @@ class FlightService extends FlightServiceImplBase {
   private final BufferAllocator allocator;
   private final FlightProducer producer;
   private final ServerAuthHandler authHandler;
-  private final ExecutorService executors = Executors.newCachedThreadPool();
+  private final ExecutorService executors;
 
-  public FlightService(BufferAllocator allocator, FlightProducer producer, ServerAuthHandler authHandler) {
+  FlightService(BufferAllocator allocator, FlightProducer producer, ServerAuthHandler authHandler,
+      ExecutorService executors) {
     this.allocator = allocator;
     this.producer = producer;
     this.authHandler = authHandler;
+    this.executors = new ContextPropagatingExecutorService(executors);
+  }
+
+  private CallContext makeContext(ServerCallStreamObserver<?> responseObserver) {
+    return new CallContext(AuthConstants.PEER_IDENTITY_KEY.get(), responseObserver::isCancelled);
   }
 
   @Override
-  public StreamObserver<HandshakeRequest> handshake(StreamObserver<HandshakeResponse> responseObserver) {
+  public StreamObserver<Flight.HandshakeRequest> handshake(StreamObserver<Flight.HandshakeResponse> responseObserver) {
     return ServerAuthWrapper.wrapHandshake(authHandler, responseObserver, executors);
   }
 
   @Override
-  public void listFlights(Flight.Criteria criteria, StreamObserver<FlightGetInfo> responseObserver) {
+  public void listFlights(Flight.Criteria criteria, StreamObserver<Flight.FlightInfo> responseObserver) {
+    final StreamPipe<FlightInfo, Flight.FlightInfo> listener = StreamPipe
+        .wrap(responseObserver, FlightInfo::toProtocol, this::handleExceptionWithMiddleware);
     try {
-      producer.listFlights(new Criteria(criteria), StreamPipe.wrap(responseObserver, t -> t.toProtocol()));
+      final CallContext context = makeContext((ServerCallStreamObserver<?>) responseObserver);
+      producer.listFlights(context, new Criteria(criteria), listener);
     } catch (Exception ex) {
-      responseObserver.onError(ex);
+      listener.onError(ex);
     }
+    // Do NOT call StreamPipe#onCompleted, as the FlightProducer implementation may be asynchronous
   }
 
   public void doGetCustom(Flight.Ticket ticket, StreamObserver<ArrowMessage> responseObserver) {
+    final GetListener listener = new GetListener(responseObserver, this::handleExceptionWithMiddleware);
     try {
-      producer.getStream(new Ticket(ticket), new GetListener(responseObserver));
+      producer.getStream(makeContext((ServerCallStreamObserver<?>) responseObserver), new Ticket(ticket), listener);
     } catch (Exception ex) {
-      responseObserver.onError(ex);
+      listener.error(ex);
     }
+    // Do NOT call GetListener#completed, as the implementation of getStream may be asynchronous
   }
 
   @Override
-  public void doAction(Flight.Action request, StreamObserver<Result> responseObserver) {
+  public void doAction(Flight.Action request, StreamObserver<Flight.Result> responseObserver) {
+    final StreamPipe<Result, Flight.Result> listener = StreamPipe
+        .wrap(responseObserver, Result::toProtocol, this::handleExceptionWithMiddleware);
     try {
-      responseObserver.onNext(producer.doAction(new Action(request)).toProtocol());
-      responseObserver.onCompleted();
+      final CallContext context = makeContext((ServerCallStreamObserver<?>) responseObserver);
+      producer.doAction(context, new Action(request), listener);
     } catch (Exception ex) {
-      responseObserver.onError(ex);
+      listener.onError(ex);
     }
+    // Do NOT call StreamPipe#onCompleted, as the FlightProducer implementation may be asynchronous
   }
 
   @Override
-  public void listActions(Empty request, StreamObserver<ActionType> responseObserver) {
+  public void listActions(Flight.Empty request, StreamObserver<Flight.ActionType> responseObserver) {
+    final StreamPipe<org.apache.arrow.flight.ActionType, Flight.ActionType> listener = StreamPipe
+        .wrap(responseObserver, ActionType::toProtocol, this::handleExceptionWithMiddleware);
     try {
-      producer.listActions(StreamPipe.wrap(responseObserver, t -> t.toProtocol()));
+      final CallContext context = makeContext((ServerCallStreamObserver<?>) responseObserver);
+      producer.listActions(context, listener);
     } catch (Exception ex) {
-      responseObserver.onError(ex);
+      listener.onError(ex);
     }
+    // Do NOT call StreamPipe#onCompleted, as the FlightProducer implementation may be asynchronous
   }
 
   private static class GetListener implements ServerStreamListener {
     private ServerCallStreamObserver<ArrowMessage> responseObserver;
+    private final Consumer<Throwable> errorHandler;
+    // null until stream started
     private volatile VectorUnloader unloader;
+    private boolean completed;
 
-    public GetListener(StreamObserver<ArrowMessage> responseObserver) {
+    public GetListener(StreamObserver<ArrowMessage> responseObserver, Consumer<Throwable> errorHandler) {
       super();
+      this.errorHandler = errorHandler;
+      this.completed = false;
       this.responseObserver = (ServerCallStreamObserver<ArrowMessage>) responseObserver;
-      this.responseObserver.setOnCancelHandler(() -> onCancel());
+      this.responseObserver.setOnCancelHandler(this::onCancel);
       this.responseObserver.disableAutoInboundFlowControl();
     }
 
@@ -117,7 +148,6 @@ class FlightService extends FlightServiceImplBase {
 
     @Override
     public boolean isReady() {
-
       return responseObserver.isReady();
     }
 
@@ -127,56 +157,169 @@ class FlightService extends FlightServiceImplBase {
 
     @Override
     public void start(VectorSchemaRoot root) {
-      responseObserver.onNext(new ArrowMessage(null, root.getSchema()));
-      // [ARROW-4213] We must align buffers to be compatible with other languages.
+      start(root, new MapDictionaryProvider());
+    }
+
+    @Override
+    public void start(VectorSchemaRoot root, DictionaryProvider provider) {
       unloader = new VectorUnloader(root, true, true);
+
+      DictionaryUtils.generateSchemaMessages(root.getSchema(), null, provider, responseObserver::onNext);
     }
 
     @Override
     public void putNext() {
+      putNext(null);
+    }
+
+    @Override
+    public void putNext(ArrowBuf metadata) {
       Preconditions.checkNotNull(unloader);
-      responseObserver.onNext(new ArrowMessage(unloader.getRecordBatch()));
+      responseObserver.onNext(new ArrowMessage(unloader.getRecordBatch(), metadata));
     }
 
     @Override
     public void error(Throwable ex) {
-      responseObserver.onError(ex);
+      if (!completed) {
+        completed = true;
+        responseObserver.onError(StatusUtils.toGrpcException(ex));
+      } else {
+        errorHandler.accept(ex);
+      }
     }
 
     @Override
     public void completed() {
-      responseObserver.onCompleted();
+      if (unloader == null) {
+        throw new IllegalStateException("Can't complete stream before starting it");
+      }
+      if (!completed) {
+        completed = true;
+        responseObserver.onCompleted();
+      } else {
+        errorHandler.accept(new IllegalStateException("Tried to complete already-completed call"));
+      }
     }
 
   }
 
-  public StreamObserver<ArrowMessage> doPutCustom(final StreamObserver<PutResult> responseObserverSimple) {
-    ServerCallStreamObserver<PutResult> responseObserver = (ServerCallStreamObserver<PutResult>) responseObserverSimple;
+  public StreamObserver<ArrowMessage> doPutCustom(final StreamObserver<Flight.PutResult> responseObserverSimple) {
+    ServerCallStreamObserver<Flight.PutResult> responseObserver =
+        (ServerCallStreamObserver<Flight.PutResult>) responseObserverSimple;
     responseObserver.disableAutoInboundFlowControl();
     responseObserver.request(1);
 
-    FlightStream fs = new FlightStream(allocator, PENDING_REQUESTS, null, (count) -> responseObserver.request(count));
+    final FlightStream fs = new FlightStream(allocator, PENDING_REQUESTS, (String message, Throwable cause) -> {
+      responseObserver.onError(Status.CANCELLED.withCause(cause).withDescription(message).asException());
+    }, responseObserver::request);
+    final StreamObserver<ArrowMessage> observer = fs.asObserver();
     executors.submit(() -> {
+      final StreamPipe<PutResult, Flight.PutResult> ackStream = StreamPipe
+          .wrap(responseObserver, PutResult::toProtocol, this::handleExceptionWithMiddleware);
       try {
-        responseObserver.onNext(producer.acceptPut(fs).call());
-        responseObserver.onCompleted();
+        producer.acceptPut(makeContext(responseObserver), fs, ackStream).run();
       } catch (Exception ex) {
-        responseObserver.onError(ex);
+        ackStream.onError(ex);
+      } finally {
+        // ARROW-6136: Close the stream if and only if acceptPut hasn't closed it itself
+        // We don't do this for other streams since the implementation may be asynchronous
+        ackStream.ensureCompleted();
+        try {
+          fs.close();
+        } catch (Exception e) {
+          handleExceptionWithMiddleware(e);
+        }
       }
     });
 
-    return fs.asObserver();
+    return observer;
   }
 
   @Override
-  public void getFlightInfo(Flight.FlightDescriptor request, StreamObserver<FlightGetInfo> responseObserver) {
+  public void getFlightInfo(Flight.FlightDescriptor request, StreamObserver<Flight.FlightInfo> responseObserver) {
+    final FlightInfo info;
     try {
-      FlightInfo info = producer.getFlightInfo(new FlightDescriptor(request));
-      responseObserver.onNext(info.toProtocol());
+      info = producer
+          .getFlightInfo(makeContext((ServerCallStreamObserver<?>) responseObserver), new FlightDescriptor(request));
+    } catch (Exception ex) {
+      // Don't capture exceptions from onNext or onCompleted with this block - because then we can't call onError
+      responseObserver.onError(StatusUtils.toGrpcException(ex));
+      return;
+    }
+    responseObserver.onNext(info.toProtocol());
+    responseObserver.onCompleted();
+  }
+
+  /**
+   * Broadcast the given exception to all registered middleware.
+   */
+  private void handleExceptionWithMiddleware(Throwable t) {
+    final Map<Key<?>, FlightServerMiddleware> middleware = ServerInterceptorAdapter.SERVER_MIDDLEWARE_KEY.get();
+    if (middleware == null) {
+      logger.error("Uncaught exception in Flight method body", t);
+      return;
+    }
+    middleware.forEach((k, v) -> v.onCallErrored(t));
+  }
+
+  @Override
+  public void getSchema(Flight.FlightDescriptor request, StreamObserver<Flight.SchemaResult> responseObserver) {
+    try {
+      SchemaResult result = producer
+              .getSchema(makeContext((ServerCallStreamObserver<?>) responseObserver),
+                      new FlightDescriptor(request));
+      responseObserver.onNext(result.toProtocol());
       responseObserver.onCompleted();
     } catch (Exception ex) {
-      responseObserver.onError(ex);
+      responseObserver.onError(StatusUtils.toGrpcException(ex));
     }
   }
 
+  /**
+   * Call context for the service.
+   */
+  static class CallContext implements FlightProducer.CallContext {
+
+    private final String peerIdentity;
+    private final BooleanSupplier isCancelled;
+
+    CallContext(final String peerIdentity, BooleanSupplier isCancelled) {
+      this.peerIdentity = peerIdentity;
+      this.isCancelled = isCancelled;
+    }
+
+    @Override
+    public String peerIdentity() {
+      return peerIdentity;
+    }
+
+    @Override
+    public boolean isCancelled() {
+      return this.isCancelled.getAsBoolean();
+    }
+
+    @Override
+    public <T extends FlightServerMiddleware> T getMiddleware(Key<T> key) {
+      final Map<Key<?>, FlightServerMiddleware> middleware = ServerInterceptorAdapter.SERVER_MIDDLEWARE_KEY.get();
+      if (middleware == null) {
+        return null;
+      }
+      final FlightServerMiddleware m = middleware.get(key);
+      if (m == null) {
+        return null;
+      }
+      @SuppressWarnings("unchecked") final T result = (T) m;
+      return result;
+    }
+
+    @Override
+    public Map<Key<?>, FlightServerMiddleware> getMiddleware() {
+      final Map<Key<?>, FlightServerMiddleware> middleware = ServerInterceptorAdapter.SERVER_MIDDLEWARE_KEY.get();
+      if (middleware == null) {
+        return Collections.emptyMap();
+      }
+      // This is an unmodifiable map
+      return middleware;
+    }
+  }
 }

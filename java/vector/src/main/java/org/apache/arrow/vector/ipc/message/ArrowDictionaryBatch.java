@@ -18,9 +18,14 @@
 package org.apache.arrow.vector.ipc.message;
 
 import org.apache.arrow.flatbuf.DictionaryBatch;
+import org.apache.arrow.flatbuf.MessageHeader;
 
 import com.google.flatbuffers.FlatBufferBuilder;
 
+/**
+ * POJO wrapper around a Dictionary Batch IPC messages
+ * (https://arrow.apache.org/docs/format/IPC.html#dictionary-batches)
+ */
 public class ArrowDictionaryBatch implements ArrowMessage {
 
   private final long dictionaryId;
@@ -29,6 +34,10 @@ public class ArrowDictionaryBatch implements ArrowMessage {
   public ArrowDictionaryBatch(long dictionaryId, ArrowRecordBatch dictionary) {
     this.dictionaryId = dictionaryId;
     this.dictionary = dictionary;
+  }
+
+  public byte getMessageType() {
+    return MessageHeader.DictionaryBatch;
   }
 
   public long getDictionaryId() {

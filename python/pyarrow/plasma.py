@@ -15,6 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from __future__ import absolute_import
+
 import contextlib
 import os
 import pyarrow as pa
@@ -25,7 +27,9 @@ import tempfile
 import time
 
 from pyarrow._plasma import (ObjectID, ObjectNotAvailable, # noqa
-                             PlasmaBuffer, PlasmaClient, connect)
+                             PlasmaBuffer, PlasmaClient, connect,
+                             PlasmaObjectExists, PlasmaObjectNonexistent,
+                             PlasmaStoreFull)
 
 
 # The Plasma TensorFlow Operator needs to be compiled on the end user's
@@ -102,7 +106,7 @@ def start_plasma_store(plasma_store_memory,
     try:
         plasma_store_name = os.path.join(tmpdir, 'plasma.sock')
         plasma_store_executable = os.path.join(
-            pa.__path__[0], "plasma_store_server")
+            pa.__path__[0], "plasma-store-server")
         command = [plasma_store_executable,
                    "-s", plasma_store_name,
                    "-m", str(plasma_store_memory)]

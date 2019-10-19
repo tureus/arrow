@@ -15,14 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from __future__ import absolute_import
+
 import collections
 import six
 import sys
 
 import numpy as np
 
-import pyarrow
-from pyarrow.compat import builtin_pickle
+import pyarrow as pa
+from pyarrow.compat import builtin_pickle, descr_to_dtype
 from pyarrow.lib import SerializationContext, py_buffer
 
 try:
@@ -42,35 +44,52 @@ def _serialize_numpy_array_list(obj):
         # the view.
         if not obj.flags.c_contiguous:
             obj = np.ascontiguousarray(obj)
-        return obj.view('uint8'), obj.dtype.str
+        return obj.view('uint8'), np.lib.format.dtype_to_descr(obj.dtype)
     else:
-        return obj.tolist(), obj.dtype.str
+        return obj.tolist(), np.lib.format.dtype_to_descr(obj.dtype)
 
 
 def _deserialize_numpy_array_list(data):
     if data[1] != '|O':
         assert data[0].dtype == np.uint8
-        return data[0].view(data[1])
+        return data[0].view(descr_to_dtype(data[1]))
     else:
         return np.array(data[0], dtype=np.dtype(data[1]))
+
+
+def _serialize_numpy_matrix(obj):
+    if obj.dtype.str != '|O':
+        # Make the array c_contiguous if necessary so that we can call change
+        # the view.
+        if not obj.flags.c_contiguous:
+            obj = np.ascontiguousarray(obj.A)
+        return obj.A.view('uint8'), np.lib.format.dtype_to_descr(obj.dtype)
+    else:
+        return obj.A.tolist(), np.lib.format.dtype_to_descr(obj.dtype)
+
+
+def _deserialize_numpy_matrix(data):
+    if data[1] != '|O':
+        assert data[0].dtype == np.uint8
+        return np.matrix(data[0].view(descr_to_dtype(data[1])),
+                         copy=False)
+    else:
+        return np.matrix(data[0], dtype=np.dtype(data[1]), copy=False)
 
 
 # ----------------------------------------------------------------------
 # pyarrow.RecordBatch-specific serialization matters
 
 def _serialize_pyarrow_recordbatch(batch):
-    output_stream = pyarrow.BufferOutputStream()
-    writer = pyarrow.RecordBatchStreamWriter(output_stream,
-                                             schema=batch.schema)
-    writer.write_batch(batch)
-    writer.close()
+    output_stream = pa.BufferOutputStream()
+    with pa.RecordBatchStreamWriter(output_stream, schema=batch.schema) as wr:
+        wr.write_batch(batch)
     return output_stream.getvalue()  # This will also close the stream.
 
 
 def _deserialize_pyarrow_recordbatch(buf):
-    reader = pyarrow.RecordBatchStreamReader(buf)
-    batch = reader.read_next_batch()
-    return batch
+    with pa.RecordBatchStreamReader(buf) as reader:
+        return reader.read_next_batch()
 
 
 # ----------------------------------------------------------------------
@@ -78,7 +97,7 @@ def _deserialize_pyarrow_recordbatch(buf):
 
 def _serialize_pyarrow_array(array):
     # TODO(suquark): implement more effcient array serialization.
-    batch = pyarrow.RecordBatch.from_arrays([array], [''])
+    batch = pa.RecordBatch.from_arrays([array], [''])
     return _serialize_pyarrow_recordbatch(batch)
 
 
@@ -92,18 +111,15 @@ def _deserialize_pyarrow_array(buf):
 # pyarrow.Table-specific serialization matters
 
 def _serialize_pyarrow_table(table):
-    output_stream = pyarrow.BufferOutputStream()
-    writer = pyarrow.RecordBatchStreamWriter(output_stream,
-                                             schema=table.schema)
-    writer.write_table(table)
-    writer.close()
+    output_stream = pa.BufferOutputStream()
+    with pa.RecordBatchStreamWriter(output_stream, schema=table.schema) as wr:
+        wr.write_table(table)
     return output_stream.getvalue()  # This will also close the stream.
 
 
 def _deserialize_pyarrow_table(buf):
-    reader = pyarrow.RecordBatchStreamReader(buf)
-    table = reader.read_all()
-    return table
+    with pa.RecordBatchStreamReader(buf) as reader:
+        return reader.read_all()
 
 
 def _pickle_to_buffer(x):
@@ -141,7 +157,8 @@ def _register_custom_pandas_handlers(context):
     )
 
     def _serialize_pandas_dataframe(obj):
-        if isinstance(obj, pd.SparseDataFrame):
+        if (pdcompat._pandas_api.has_sparse
+                and isinstance(obj, pd.SparseDataFrame)):
             raise NotImplementedError(
                 sparse_type_error_msg.format('SparseDataFrame')
             )
@@ -152,7 +169,8 @@ def _register_custom_pandas_handlers(context):
         return pdcompat.serialized_dict_to_dataframe(data)
 
     def _serialize_pandas_series(obj):
-        if isinstance(obj, pd.SparseSeries):
+        if (pdcompat._pandas_api.has_sparse
+                and isinstance(obj, pd.SparseSeries)):
             raise NotImplementedError(
                 sparse_type_error_msg.format('SparseSeries')
             )
@@ -209,10 +227,19 @@ def register_torch_serialization_handlers(serialization_context):
         import torch
 
         def _serialize_torch_tensor(obj):
-            return obj.detach().numpy()
+            if obj.is_sparse:
+                # TODO(pcm): Once ARROW-4453 is resolved, return sparse
+                # tensor representation here
+                return (obj._indices().detach().numpy(),
+                        obj._values().detach().numpy(), list(obj.shape))
+            else:
+                return obj.detach().numpy()
 
         def _deserialize_torch_tensor(data):
-            return torch.from_numpy(data)
+            if isinstance(data, tuple):
+                return torch.sparse_coo_tensor(data[0], data[1], data[2])
+            else:
+                return torch.from_numpy(data)
 
         for t in [torch.FloatTensor, torch.DoubleTensor, torch.HalfTensor,
                   torch.ByteTensor, torch.CharTensor, torch.ShortTensor,
@@ -298,22 +325,27 @@ def register_default_serialization_handlers(serialization_context):
     serialization_context.register_type(type, "type", pickle=True)
 
     serialization_context.register_type(
+        np.matrix, 'np.matrix',
+        custom_serializer=_serialize_numpy_matrix,
+        custom_deserializer=_deserialize_numpy_matrix)
+
+    serialization_context.register_type(
         np.ndarray, 'np.array',
         custom_serializer=_serialize_numpy_array_list,
         custom_deserializer=_deserialize_numpy_array_list)
 
     serialization_context.register_type(
-        pyarrow.Array, 'pyarrow.Array',
+        pa.Array, 'pyarrow.Array',
         custom_serializer=_serialize_pyarrow_array,
         custom_deserializer=_deserialize_pyarrow_array)
 
     serialization_context.register_type(
-        pyarrow.RecordBatch, 'pyarrow.RecordBatch',
+        pa.RecordBatch, 'pyarrow.RecordBatch',
         custom_serializer=_serialize_pyarrow_recordbatch,
         custom_deserializer=_deserialize_pyarrow_recordbatch)
 
     serialization_context.register_type(
-        pyarrow.Table, 'pyarrow.Table',
+        pa.Table, 'pyarrow.Table',
         custom_serializer=_serialize_pyarrow_table,
         custom_deserializer=_deserialize_pyarrow_table)
 

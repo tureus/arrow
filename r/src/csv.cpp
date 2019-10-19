@@ -20,18 +20,23 @@
 using Rcpp::CharacterVector;
 using Rcpp::List_;
 
-// [[Rcpp::export]]
+#if defined(ARROW_R_WITH_ARROW)
+
+// [[arrow::export]]
 std::shared_ptr<arrow::csv::ReadOptions> csv___ReadOptions__initialize(List_ options) {
   auto res =
       std::make_shared<arrow::csv::ReadOptions>(arrow::csv::ReadOptions::Defaults());
   res->use_threads = options["use_threads"];
   res->block_size = options["block_size"];
+  res->skip_rows = options["skip_rows"];
+  res->column_names = Rcpp::as<std::vector<std::string>>(options["column_names"]);
+  res->autogenerate_column_names = options["autogenerate_column_names"];
   return res;
 }
 
 inline char get_char(CharacterVector x) { return CHAR(STRING_ELT(x, 0))[0]; }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::csv::ParseOptions> csv___ParseOptions__initialize(List_ options) {
   auto res =
       std::make_shared<arrow::csv::ParseOptions>(arrow::csv::ParseOptions::Defaults());
@@ -41,21 +46,33 @@ std::shared_ptr<arrow::csv::ParseOptions> csv___ParseOptions__initialize(List_ o
   res->double_quote = options["double_quote"];
   res->escape_char = get_char(options["escape_char"]);
   res->newlines_in_values = options["newlines_in_values"];
-  res->header_rows = options["header_rows"];
   res->ignore_empty_lines = options["ignore_empty_lines"];
   return res;
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::csv::ConvertOptions> csv___ConvertOptions__initialize(
     List_ options) {
   auto res = std::make_shared<arrow::csv::ConvertOptions>(
       arrow::csv::ConvertOptions::Defaults());
   res->check_utf8 = options["check_utf8"];
+  // Recognized spellings for null values
+  res->null_values = Rcpp::as<std::vector<std::string>>(options["null_values"]);
+  // Whether string / binary columns can have null values.
+  // If true, then strings in "null_values" are considered null for string columns.
+  // If false, then all strings are valid string values.
+  res->strings_can_be_null = options["strings_can_be_null"];
+  // TODO: there are more conversion options available:
+  // // Optional per-column types (disabling type inference on those columns)
+  // std::unordered_map<std::string, std::shared_ptr<DataType>> column_types;
+  // // Recognized spellings for boolean values
+  // std::vector<std::string> true_values;
+  // std::vector<std::string> false_values;
+
   return res;
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::csv::TableReader> csv___TableReader__Make(
     const std::shared_ptr<arrow::io::InputStream>& input,
     const std::shared_ptr<arrow::csv::ReadOptions>& read_options,
@@ -68,10 +85,12 @@ std::shared_ptr<arrow::csv::TableReader> csv___TableReader__Make(
   return table_reader;
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::Table> csv___TableReader__Read(
     const std::shared_ptr<arrow::csv::TableReader>& table_reader) {
   std::shared_ptr<arrow::Table> table;
   STOP_IF_NOT_OK(table_reader->Read(&table));
   return table;
 }
+
+#endif

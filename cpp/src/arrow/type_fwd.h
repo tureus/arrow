@@ -24,9 +24,16 @@
 
 namespace arrow {
 
+template <typename T>
+class Iterator;
+
+template <typename T>
+class Result;
+
 class Status;
 
 class DataType;
+class KeyValueMetadata;
 class Array;
 struct ArrayData;
 class ArrayBuilder;
@@ -34,9 +41,10 @@ class Field;
 class Tensor;
 
 class ChunkedArray;
-class Column;
 class RecordBatch;
 class Table;
+
+using RecordBatchIterator = Iterator<std::shared_ptr<RecordBatch>>;
 
 class Buffer;
 class MemoryPool;
@@ -62,6 +70,11 @@ class BinaryArray;
 class BinaryBuilder;
 struct BinaryScalar;
 
+class LargeBinaryType;
+class LargeBinaryArray;
+class LargeBinaryBuilder;
+struct LargeBinaryScalar;
+
 class FixedSizeBinaryType;
 class FixedSizeBinaryArray;
 class FixedSizeBinaryBuilder;
@@ -72,10 +85,30 @@ class StringArray;
 class StringBuilder;
 struct StringScalar;
 
+class LargeStringType;
+class LargeStringArray;
+class LargeStringBuilder;
+struct LargeStringScalar;
+
 class ListType;
 class ListArray;
 class ListBuilder;
 struct ListScalar;
+
+class LargeListType;
+class LargeListArray;
+class LargeListBuilder;
+struct LargeListScalar;
+
+class MapType;
+class MapArray;
+class MapBuilder;
+struct MapScalar;
+
+class FixedSizeListType;
+class FixedSizeListArray;
+class FixedSizeListBuilder;
+struct FixedSizeListScalar;
 
 class StructType;
 class StructArray;
@@ -149,9 +182,20 @@ using TimestampArray = NumericArray<TimestampType>;
 using TimestampBuilder = NumericBuilder<TimestampType>;
 class TimestampScalar;
 
-class IntervalType;
-using IntervalArray = NumericArray<IntervalType>;
-class IntervalScalar;
+class MonthIntervalType;
+using MonthIntervalArray = NumericArray<MonthIntervalType>;
+using MonthIntervalBuilder = NumericBuilder<MonthIntervalType>;
+class MonthIntervalScalar;
+
+class DayTimeIntervalType;
+class DayTimeIntervalArray;
+class DayTimeIntervalBuilder;
+class DayTimeIntervalScalar;
+
+class DurationType;
+using DurationArray = NumericArray<DurationType>;
+using DurationBuilder = NumericBuilder<DurationType>;
+class DurationScalar;
 
 class ExtensionType;
 class ExtensionArray;
@@ -194,8 +238,12 @@ std::shared_ptr<DataType> ARROW_EXPORT float32();
 std::shared_ptr<DataType> ARROW_EXPORT float64();
 /// \brief Return a StringType instance
 std::shared_ptr<DataType> ARROW_EXPORT utf8();
+/// \brief Return a LargeStringType instance
+std::shared_ptr<DataType> ARROW_EXPORT large_utf8();
 /// \brief Return a BinaryType instance
 std::shared_ptr<DataType> ARROW_EXPORT binary();
+/// \brief Return a LargeBinaryType instance
+std::shared_ptr<DataType> ARROW_EXPORT large_binary();
 /// \brief Return a Date32Type instance
 std::shared_ptr<DataType> ARROW_EXPORT date32();
 /// \brief Return a Date64Type instance

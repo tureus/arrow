@@ -32,14 +32,10 @@ function collapseContiguousByteRanges(chunks: Uint8Array[]) {
     for (let x, y, i = 0, j = 0, n = chunks.length; ++i < n;) {
         x = result[j];
         y = chunks[i];
-        // continue x and y don't share the same underlying ArrayBuffer
-        if (!x || !y || x.buffer !== y.buffer) {
+        // continue if x and y don't share the same underlying ArrayBuffer, or if x isn't before y
+        if (!x || !y || x.buffer !== y.buffer || y.byteOffset < x.byteOffset) {
             y && (result[++j] = y);
             continue;
-        }
-        // swap if y starts before x
-        if (y.byteOffset < x.byteOffset) {
-            x = chunks[i]; y = result[j];
         }
         ({ byteOffset: xOffset, byteLength: xLen } = x);
         ({ byteOffset: yOffset, byteLength: yLen } = y);
@@ -99,14 +95,16 @@ export function toArrayBufferView(ArrayBufferViewCtor: any, input: ArrayBufferVi
 
     let value: any = isIteratorResult(input) ? input.value : input;
 
-    if (!value) { return new ArrayBufferViewCtor(0); }
-    if (typeof value === 'string') { value = encodeUtf8(value); }
     if (value instanceof ArrayBufferViewCtor) {
-        return value.constructor === ArrayBufferViewCtor ? value :
+        if (ArrayBufferViewCtor === Uint8Array) {
             // Node's `Buffer` class passes the `instanceof Uint8Array` check, but we need
             // a real Uint8Array, since Buffer#slice isn't the same as Uint8Array#slice :/
-            new ArrayBufferViewCtor(value.buffer, value.byteOffset, value.byteLength / ArrayBufferViewCtor.BYTES_PER_ELEMENT);
+            return new ArrayBufferViewCtor(value.buffer, value.byteOffset, value.byteLength);
+        }
+        return value;
     }
+    if (!value) { return new ArrayBufferViewCtor(0); }
+    if (typeof value === 'string') { value = encodeUtf8(value); }
     if (value instanceof ArrayBuffer) { return new ArrayBufferViewCtor(value); }
     if (value instanceof SharedArrayBuf) { return new ArrayBufferViewCtor(value); }
     if (value instanceof ByteBuffer) { return toArrayBufferView(ArrayBufferViewCtor, value.bytes()); }
@@ -125,27 +123,6 @@ export function toArrayBufferView(ArrayBufferViewCtor: any, input: ArrayBufferVi
 /** @ignore */ export const toFloat32Array = (input: ArrayBufferViewInput) => toArrayBufferView(Float32Array, input);
 /** @ignore */ export const toFloat64Array = (input: ArrayBufferViewInput) => toArrayBufferView(Float64Array, input);
 /** @ignore */ export const toUint8ClampedArray = (input: ArrayBufferViewInput) => toArrayBufferView(Uint8ClampedArray, input);
-
-/** @ignore */
-export const toFloat16Array = (input: ArrayBufferViewInput) => {
-    let floats: Float32Array | Float64Array | null = null;
-    if (ArrayBuffer.isView(input)) {
-        switch (input.constructor) {
-            case Float32Array: floats = input as Float32Array; break;
-            case Float64Array: floats = input as Float64Array; break;
-        }
-    } else if (isIterable(input)) {
-        floats = toFloat64Array(input);
-    }
-    if (floats) {
-        const u16s = new Uint16Array(floats.length);
-        for (let i = -1, n = u16s.length; ++i < n;) {
-            u16s[i] = (floats[i] * 32767) + 32767;
-        }
-        return u16s;
-    }
-    return toUint16Array(input);
-};
 
 /** @ignore */
 type ArrayBufferViewIteratorInput = Iterable<ArrayBufferViewInput> | ArrayBufferViewInput;

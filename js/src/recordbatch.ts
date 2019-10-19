@@ -18,13 +18,15 @@
 import { Data } from './data';
 import { Table } from './table';
 import { Vector } from './vector';
+import { Visitor } from './visitor';
 import { Schema, Field } from './schema';
-import { DataType, Struct } from './type';
+import { isIterable } from './util/compat';
 import { Chunked } from './vector/chunked';
-import { StructVector } from './vector/struct';
 import { selectFieldArgs } from './util/args';
+import { DataType, Struct, Dictionary } from './type';
 import { ensureSameLengthData } from './util/recordbatch';
 import { Clonable, Sliceable, Applicative } from './vector';
+import { StructVector, VectorBuilderOptions, VectorBuilderOptionsAsync } from './vector/index';
 
 type VectorMap = { [key: string]: Vector };
 type Fields<T extends { [key: string]: DataType }> = (keyof T)[] | Field<T[keyof T]>[];
@@ -42,11 +44,14 @@ export class RecordBatch<T extends { [key: string]: DataType } = any>
                Sliceable<RecordBatch<T>>,
                Applicative<Struct<T>, Table<T>> {
 
-    public static from<T extends VectorMap = any>(children: T): RecordBatch<{ [P in keyof T]: T[P]['type'] }>;
-    public static from<T extends { [key: string]: DataType } = any>(children: ChildData<T>, fields?: Fields<T>): RecordBatch<T>;
+    public static from<T extends { [key: string]: DataType } = any, TNull = any>(options: VectorBuilderOptions<Struct<T>, TNull>): Table<T>;
+    public static from<T extends { [key: string]: DataType } = any, TNull = any>(options: VectorBuilderOptionsAsync<Struct<T>, TNull>): Promise<Table<T>>;
     /** @nocollapse */
-    public static from(...args: any[]) {
-        return RecordBatch.new(args[0], args[1]);
+    public static from<T extends { [key: string]: DataType } = any, TNull = any>(options: VectorBuilderOptions<Struct<T>, TNull> | VectorBuilderOptionsAsync<Struct<T>, TNull>) {
+        if (isIterable<(Struct<T>)['TValue'] | TNull>(options['values'])) {
+            return Table.from(options as VectorBuilderOptions<Struct<T>, TNull>);
+        }
+        return Table.from(options as VectorBuilderOptionsAsync<Struct<T>, TNull>);
     }
 
     public static new<T extends VectorMap = any>(children: T): RecordBatch<{ [P in keyof T]: T[P]['type'] }>;
@@ -59,6 +64,7 @@ export class RecordBatch<T extends { [key: string]: DataType } = any>
     }
 
     protected _schema: Schema;
+    protected _dictionaries?: Map<number, Vector>;
 
     constructor(schema: Schema<T>, length: number, children: (Data | Vector)[]);
     constructor(schema: Schema<T>, data: Data<Struct<T>>, children?: Vector[]);
@@ -88,6 +94,9 @@ export class RecordBatch<T extends { [key: string]: DataType } = any>
 
     public get schema() { return this._schema; }
     public get numCols() { return this._schema.fields.length; }
+    public get dictionaries() {
+        return this._dictionaries || (this._dictionaries = DictionaryCollector.collect(this));
+    }
 
     public select<K extends keyof T = any>(...columnNames: K[]) {
         const nameToIndex = this._schema.fields.reduce((m, f, i) => m.set(f.name as K, i), new Map<K, number>());
@@ -97,5 +106,46 @@ export class RecordBatch<T extends { [key: string]: DataType } = any>
         const schema = this._schema.selectAt(...columnIndices);
         const childData = columnIndices.map((i) => this.data.childData[i]).filter(Boolean);
         return new RecordBatch<{ [key: string]: K }>(schema, this.length, childData);
+    }
+}
+
+/**
+ * An internal class used by the `RecordBatchReader` and `RecordBatchWriter`
+ * implementations to differentiate between a stream with valid zero-length
+ * RecordBatches, and a stream with a Schema message, but no RecordBatches.
+ * @see https://github.com/apache/arrow/pull/4373
+ * @ignore
+ * @private
+ */
+/* tslint:disable:class-name */
+export class _InternalEmptyPlaceholderRecordBatch<T extends { [key: string]: DataType } = any> extends RecordBatch<T> {
+    constructor(schema: Schema<T>) {
+        super(schema, 0, schema.fields.map((f) => Data.new(f.type, 0, 0, 0)));
+    }
+}
+
+/** @ignore */
+class DictionaryCollector extends Visitor {
+    public dictionaries = new Map<number, Vector>();
+    public static collect<T extends RecordBatch>(batch: T) {
+        return new DictionaryCollector().visit(
+            batch.data, new Struct(batch.schema.fields)
+        ).dictionaries;
+    }
+    public visit(data: Data, type: DataType) {
+        if (DataType.isDictionary(type)) {
+            return this.visitDictionary(data, type);
+        } else {
+            data.childData.forEach((child, i) =>
+                this.visit(child, type.children[i].type));
+        }
+        return this;
+    }
+    public visitDictionary(data: Data, type: Dictionary) {
+        const dictionary = data.dictionary;
+        if (dictionary && dictionary.length > 0) {
+            this.dictionaries.set(type.id, dictionary);
+        }
+        return this;
     }
 }

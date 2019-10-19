@@ -44,6 +44,26 @@ bool VerifyFlatbuffer(T* object, uint8_t* data, size_t size) {
 
 Status PlasmaReceive(int sock, MessageType message_type, std::vector<uint8_t>* buffer);
 
+/* Set options messages. */
+
+Status SendSetOptionsRequest(int sock, const std::string& client_name,
+                             int64_t output_memory_limit);
+
+Status ReadSetOptionsRequest(uint8_t* data, size_t size, std::string* client_name,
+                             int64_t* output_memory_quota);
+
+Status SendSetOptionsReply(int sock, PlasmaError error);
+
+Status ReadSetOptionsReply(uint8_t* data, size_t size);
+
+/* Debug string messages. */
+
+Status SendGetDebugStringRequest(int sock);
+
+Status SendGetDebugStringReply(int sock, const std::string& debug_string);
+
+Status ReadGetDebugStringReply(uint8_t* data, size_t size, std::string* debug_string);
+
 /* Plasma Create message functions. */
 
 Status SendCreateRequest(int sock, ObjectID object_id, int64_t data_size,
@@ -66,9 +86,24 @@ Status ReadCreateAndSealRequest(uint8_t* data, size_t size, ObjectID* object_id,
                                 std::string* object_data, std::string* metadata,
                                 unsigned char* digest);
 
+Status SendCreateAndSealBatchRequest(int sock, const std::vector<ObjectID>& object_ids,
+                                     const std::vector<std::string>& data,
+                                     const std::vector<std::string>& metadata,
+                                     const std::vector<std::string>& digests);
+
+Status ReadCreateAndSealBatchRequest(uint8_t* data, size_t size,
+                                     std::vector<ObjectID>* object_id,
+                                     std::vector<std::string>* object_data,
+                                     std::vector<std::string>* metadata,
+                                     std::vector<std::string>* digests);
+
 Status SendCreateAndSealReply(int sock, PlasmaError error);
 
 Status ReadCreateAndSealReply(uint8_t* data, size_t size);
+
+Status SendCreateAndSealBatchReply(int sock, PlasmaError error);
+
+Status ReadCreateAndSealBatchReply(uint8_t* data, size_t size);
 
 Status SendAbortRequest(int sock, ObjectID object_id);
 

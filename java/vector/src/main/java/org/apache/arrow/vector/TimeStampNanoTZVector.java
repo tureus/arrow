@@ -25,6 +25,7 @@ import org.apache.arrow.vector.holders.TimeStampNanoTZHolder;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
@@ -33,7 +34,7 @@ import org.apache.arrow.vector.util.TransferPair;
  * timestamp (nanosecond resolution) values which could be null. A validity buffer
  * (bit vector) is maintained to track which elements in the vector are null.
  */
-public class TimeStampNanoTZVector extends TimeStampVector {
+public final class TimeStampNanoTZVector extends TimeStampVector {
   private final FieldReader reader;
   private final String timeZone;
 
@@ -59,6 +60,20 @@ public class TimeStampNanoTZVector extends TimeStampVector {
   public TimeStampNanoTZVector(String name, FieldType fieldType, BufferAllocator allocator) {
     super(name, fieldType, allocator);
     ArrowType.Timestamp arrowType = (ArrowType.Timestamp) fieldType.getType();
+    timeZone = arrowType.getTimezone();
+    reader = new TimeStampNanoTZReaderImpl(TimeStampNanoTZVector.this);
+  }
+
+  /**
+   * Instantiate a TimeStampNanoTZVector. This doesn't allocate any memory for
+   * the data in vector.
+   *
+   * @param field Field materialized by this vector
+   * @param allocator allocator for memory management.
+   */
+  public TimeStampNanoTZVector(Field field, BufferAllocator allocator) {
+    super(field, allocator);
+    ArrowType.Timestamp arrowType = (ArrowType.Timestamp) field.getFieldType().getType();
     timeZone = arrowType.getTimezone();
     reader = new TimeStampNanoTZReaderImpl(TimeStampNanoTZVector.this);
   }

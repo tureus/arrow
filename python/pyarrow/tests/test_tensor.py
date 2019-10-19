@@ -23,12 +23,28 @@ import numpy as np
 import pyarrow as pa
 
 
+tensor_type_pairs = [
+    ('i1', pa.int8()),
+    ('i2', pa.int16()),
+    ('i4', pa.int32()),
+    ('i8', pa.int64()),
+    ('u1', pa.uint8()),
+    ('u2', pa.uint16()),
+    ('u4', pa.uint32()),
+    ('u8', pa.uint64()),
+    ('f2', pa.float16()),
+    ('f4', pa.float32()),
+    ('f8', pa.float64())
+]
+
+
 def test_tensor_attrs():
     data = np.random.randn(10, 4)
 
     tensor = pa.Tensor.from_numpy(data)
 
     assert tensor.ndim == 2
+    assert tensor.dim_names == []
     assert tensor.size == 40
     assert tensor.shape == data.shape
     assert tensor.strides == data.strides
@@ -42,6 +58,13 @@ def test_tensor_attrs():
     tensor = pa.Tensor.from_numpy(data2)
     assert not tensor.is_mutable
 
+    # With dim_names
+    tensor = pa.Tensor.from_numpy(data, dim_names=('x', 'y'))
+    assert tensor.ndim == 2
+    assert tensor.dim_names == ['x', 'y']
+    assert tensor.dim_name(0) == 'x'
+    assert tensor.dim_name(1) == 'y'
+
 
 def test_tensor_base_object():
     tensor = pa.Tensor.from_numpy(np.random.randn(10, 4))
@@ -50,19 +73,7 @@ def test_tensor_base_object():
     assert sys.getrefcount(tensor) == n + 1
 
 
-@pytest.mark.parametrize('dtype_str,arrow_type', [
-    ('i1', pa.int8()),
-    ('i2', pa.int16()),
-    ('i4', pa.int32()),
-    ('i8', pa.int64()),
-    ('u1', pa.uint8()),
-    ('u2', pa.uint16()),
-    ('u4', pa.uint32()),
-    ('u8', pa.uint64()),
-    ('f2', pa.float16()),
-    ('f4', pa.float32()),
-    ('f8', pa.float64())
-])
+@pytest.mark.parametrize('dtype_str,arrow_type', tensor_type_pairs)
 def test_tensor_numpy_roundtrip(dtype_str, arrow_type):
     dtype = np.dtype(dtype_str)
     data = (100 * np.random.randn(10, 4)).astype(dtype)
@@ -74,15 +85,6 @@ def test_tensor_numpy_roundtrip(dtype_str, arrow_type):
 
     result = tensor.to_numpy()
     assert (data == result).all()
-
-
-def _try_delete(path):
-    import gc
-    gc.collect()
-    try:
-        os.remove(path)
-    except os.error:
-        pass
 
 
 def test_tensor_ipc_roundtrip(tmpdir):
@@ -97,6 +99,21 @@ def test_tensor_ipc_roundtrip(tmpdir):
     mmap.seek(0)
     result = pa.read_tensor(mmap)
 
+    assert result.equals(tensor)
+
+
+def test_tensor_ipc_read_from_compressed(tempdir):
+    # ARROW-5910
+    data = np.random.randn(10, 4)
+    tensor = pa.Tensor.from_numpy(data)
+
+    path = tempdir / 'tensor-compressed-file'
+
+    out_stream = pa.output_stream(path, compression='gzip')
+    pa.write_tensor(tensor, out_stream)
+    out_stream.close()
+
+    result = pa.read_tensor(pa.input_stream(path, compression='gzip'))
     assert result.equals(tensor)
 
 

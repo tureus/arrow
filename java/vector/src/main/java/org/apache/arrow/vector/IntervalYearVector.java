@@ -17,6 +17,8 @@
 
 package org.apache.arrow.vector;
 
+import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
+
 import java.time.Period;
 
 import org.apache.arrow.memory.BufferAllocator;
@@ -25,15 +27,18 @@ import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.IntervalYearHolder;
 import org.apache.arrow.vector.holders.NullableIntervalYearHolder;
 import org.apache.arrow.vector.types.Types.MinorType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
+
+import io.netty.buffer.ArrowBuf;
 
 /**
  * IntervalYearVector implements a fixed width (4 bytes) vector of
  * interval (years and months) values which could be null. A validity buffer
  * (bit vector) is maintained to track which elements in the vector are null.
  */
-public class IntervalYearVector extends BaseFixedWidthVector {
+public final class IntervalYearVector extends BaseFixedWidthVector {
   private static final byte TYPE_WIDTH = 4;
   private final FieldReader reader;
 
@@ -57,7 +62,18 @@ public class IntervalYearVector extends BaseFixedWidthVector {
    * @param allocator allocator for memory management.
    */
   public IntervalYearVector(String name, FieldType fieldType, BufferAllocator allocator) {
-    super(name, allocator, fieldType, TYPE_WIDTH);
+    this(new Field(name, fieldType, null), allocator);
+  }
+
+  /**
+   * Instantiate a IntervalYearVector. This doesn't allocate any memory for
+   * the data in vector.
+   *
+   * @param field field materialized by this vector
+   * @param allocator allocator for memory management.
+   */
+  public IntervalYearVector(Field field, BufferAllocator allocator) {
+    super(field, allocator, TYPE_WIDTH);
     reader = new IntervalYearReaderImpl(IntervalYearVector.this);
   }
 
@@ -91,13 +107,27 @@ public class IntervalYearVector extends BaseFixedWidthVector {
 
 
   /**
+   * Given a data buffer, get the value stored at a particular position
+   * in the vector.
+   *
+   * <p>This method should not be used externally.
+   *
+   * @param buffer data buffer
+   * @param index  position of the element.
+   * @return value stored at the index.
+   */
+  public static int getTotalMonths(final ArrowBuf buffer, final int index) {
+    return buffer.getInt(index * TYPE_WIDTH);
+  }
+
+  /**
    * Get the element at the given index from the vector.
    *
    * @param index   position of element
    * @return element at given index
    */
   public int get(int index) throws IllegalStateException {
-    if (isSet(index) == 0) {
+    if (NULL_CHECKING_ENABLED && isSet(index) == 0) {
       throw new IllegalStateException("Value at index is null");
     }
     return valueBuffer.getInt(index * TYPE_WIDTH);
@@ -160,40 +190,11 @@ public class IntervalYearVector extends BaseFixedWidthVector {
     final String monthString = (Math.abs(months) == 1) ? " month " : " months ";
 
     return (new StringBuilder()
-      .append(years)
-      .append(yearString)
-      .append(months)
-      .append(monthString));
+        .append(years)
+        .append(yearString)
+        .append(months)
+        .append(monthString));
   }
-
-  /**
-   * Copy a cell value from a particular index in source vector to a particular
-   * position in this vector.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from source vector
-   */
-  public void copyFrom(int fromIndex, int thisIndex, IntervalYearVector from) {
-    BitVectorHelper.setValidityBit(validityBuffer, thisIndex, from.isSet(fromIndex));
-    final int value = from.valueBuffer.getInt(fromIndex * TYPE_WIDTH);
-    valueBuffer.setInt(thisIndex * TYPE_WIDTH, value);
-  }
-
-  /**
-   * Same as {@link #copyFrom(int, int, IntervalYearVector)} except that
-   * it handles the case when the capacity of the vector needs to be expanded
-   * before copy.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from source vector
-   */
-  public void copyFromSafe(int fromIndex, int thisIndex, IntervalYearVector from) {
-    handleSafe(thisIndex);
-    copyFrom(fromIndex, thisIndex, from);
-  }
-
 
   /*----------------------------------------------------------------*
    |                                                                |
@@ -284,18 +285,6 @@ public class IntervalYearVector extends BaseFixedWidthVector {
   public void setSafe(int index, IntervalYearHolder holder) {
     handleSafe(index);
     set(index, holder);
-  }
-
-  /**
-   * Set the element at the given index to null.
-   *
-   * @param index   position of element
-   */
-  public void setNull(int index) {
-    handleSafe(index);
-    // not really needed to set the bit to 0 as long as
-    // the buffer always starts from 0.
-    BitVectorHelper.setValidityBit(validityBuffer, index, 0);
   }
 
   /**

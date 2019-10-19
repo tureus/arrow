@@ -19,6 +19,8 @@
 # distutils: language = c++
 # cython: embedsignature = True
 
+from __future__ import absolute_import
+
 from cython.operator cimport dereference as deref
 from libcpp.vector cimport vector as std_vector
 from pyarrow.includes.common cimport *
@@ -44,7 +46,7 @@ cdef class ORCReader:
 
     def open(self, object source, c_bool use_memory_map=True):
         cdef:
-            shared_ptr[RandomAccessFile] rd_handle
+            shared_ptr[CRandomAccessFile] rd_handle
 
         self.source = source
 

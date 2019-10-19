@@ -20,6 +20,8 @@
 # cython: embedsignature = True
 # cython: language_level = 3
 
+from __future__ import absolute_import
+
 from pyarrow.includes.common cimport *
 from pyarrow.includes.libarrow cimport *
 from pyarrow.lib cimport (check_status, Field, MemoryPool, ensure_type,
@@ -27,9 +29,7 @@ from pyarrow.lib cimport (check_status, Field, MemoryPool, ensure_type,
                           pyarrow_wrap_table, pyarrow_wrap_data_type,
                           pyarrow_unwrap_data_type)
 
-from pyarrow.compat import frombytes, tobytes
-
-from collections import Mapping
+from pyarrow.compat import frombytes, tobytes, Mapping
 
 
 cdef unsigned char _single_char(s) except 0:
@@ -51,6 +51,17 @@ cdef class ReadOptions:
         How much bytes to process at a time from the input stream.
         This will determine multi-threading granularity as well as
         the size of individual chunks in the Table.
+    skip_rows: int, optional (default 0)
+        The number of rows to skip at the start of the CSV data, not
+        including the row of column names (if any).
+    column_names: list, optional
+        The column names of the target table.  If empty, fall back on
+        `autogenerate_column_names`.
+    autogenerate_column_names: bool, optional (default False)
+        Whether to autogenerate column names if `column_names` is empty.
+        If true, column names will be of the form "f0", "f1"...
+        If false, column names will be read from the first CSV row
+        after `skip_rows`.
     """
     cdef:
         CCSVReadOptions options
@@ -58,12 +69,19 @@ cdef class ReadOptions:
     # Avoid mistakingly creating attributes
     __slots__ = ()
 
-    def __init__(self, use_threads=None, block_size=None):
+    def __init__(self, use_threads=None, block_size=None, skip_rows=None,
+                 column_names=None, autogenerate_column_names=None):
         self.options = CCSVReadOptions.Defaults()
         if use_threads is not None:
             self.use_threads = use_threads
         if block_size is not None:
             self.block_size = block_size
+        if skip_rows is not None:
+            self.skip_rows = skip_rows
+        if column_names is not None:
+            self.column_names = column_names
+        if autogenerate_column_names is not None:
+            self.autogenerate_column_names= autogenerate_column_names
 
     @property
     def use_threads(self):
@@ -89,6 +107,46 @@ cdef class ReadOptions:
     def block_size(self, value):
         self.options.block_size = value
 
+    @property
+    def skip_rows(self):
+        """
+        The number of rows to skip at the start of the CSV data, not
+        including the row of column names (if any).
+        """
+        return self.options.skip_rows
+
+    @skip_rows.setter
+    def skip_rows(self, value):
+        self.options.skip_rows = value
+
+    @property
+    def column_names(self):
+        """
+        The column names of the target table.  If empty, fall back on
+        `autogenerate_column_names`.
+        """
+        return [frombytes(s) for s in self.options.column_names]
+
+    @column_names.setter
+    def column_names(self, value):
+        self.options.column_names.clear()
+        for item in value:
+            self.options.column_names.push_back(tobytes(item))
+
+    @property
+    def autogenerate_column_names(self):
+        """
+        Whether to autogenerate column names if `column_names` is empty.
+        If true, column names will be of the form "f0", "f1"...
+        If false, column names will be read from the first CSV row
+        after `skip_rows`.
+        """
+        return self.options.autogenerate_column_names
+
+    @autogenerate_column_names.setter
+    def autogenerate_column_names(self, value):
+        self.options.autogenerate_column_names = value
+
 
 cdef class ParseOptions:
     """
@@ -107,8 +165,6 @@ cdef class ParseOptions:
     escape_char: 1-character string or False, optional (default False)
         The character used optionally for escaping special characters
         (False if escaping is not allowed).
-    header_rows: int, optional (default 1)
-        The number of rows to skip at the start of the CSV data.
     newlines_in_values: bool, optional (default False)
         Whether newline characters are allowed in CSV values.
         Setting this to True reduces the performance of multi-threaded
@@ -124,7 +180,7 @@ cdef class ParseOptions:
     __slots__ = ()
 
     def __init__(self, delimiter=None, quote_char=None, double_quote=None,
-                 escape_char=None, header_rows=None, newlines_in_values=None,
+                 escape_char=None, newlines_in_values=None,
                  ignore_empty_lines=None):
         self.options = CCSVParseOptions.Defaults()
         if delimiter is not None:
@@ -135,8 +191,6 @@ cdef class ParseOptions:
             self.double_quote = double_quote
         if escape_char is not None:
             self.escape_char = escape_char
-        if header_rows is not None:
-            self.header_rows = header_rows
         if newlines_in_values is not None:
             self.newlines_in_values = newlines_in_values
         if ignore_empty_lines is not None:
@@ -204,17 +258,6 @@ cdef class ParseOptions:
             self.options.escaping = True
 
     @property
-    def header_rows(self):
-        """
-        The number of rows to skip at the start of the CSV data.
-        """
-        return self.options.header_rows
-
-    @header_rows.setter
-    def header_rows(self, value):
-        self.options.header_rows = value
-
-    @property
     def newlines_in_values(self):
         """
         Whether newline characters are allowed in CSV values.
@@ -261,6 +304,22 @@ cdef class ConvertOptions:
     false_values: list, optional
         A sequence of strings that denote false booleans in the data
         (defaults are appropriate in most cases).
+    strings_can_be_null: bool, optional (default False)
+        Whether string / binary columns can have null values.
+        If true, then strings in null_values are considered null for
+        string columns.
+        If false, then all strings are valid string values.
+    include_columns: list, optional
+        The names of columns to include in the Table.
+        If empty, the Table will include all columns from the CSV file.
+        If not empty, only these columns will be included, in this order.
+    include_missing_columns: bool, optional (default False)
+        If false, columns in `include_columns` but not in the CSV file will
+        error out.
+        If true, columns in `include_columns` but not in the CSV file will
+        produce a column of nulls (whose type is selected using
+        `column_types`, or null by default).
+        This option is ignored if `include_columns` is empty.
     """
     cdef:
         CCSVConvertOptions options
@@ -269,7 +328,9 @@ cdef class ConvertOptions:
     __slots__ = ()
 
     def __init__(self, check_utf8=None, column_types=None, null_values=None,
-                 true_values=None, false_values=None):
+                 true_values=None, false_values=None,
+                 strings_can_be_null=None, include_columns=None,
+                 include_missing_columns=None):
         self.options = CCSVConvertOptions.Defaults()
         if check_utf8 is not None:
             self.check_utf8 = check_utf8
@@ -281,6 +342,12 @@ cdef class ConvertOptions:
             self.true_values = true_values
         if false_values is not None:
             self.false_values = false_values
+        if strings_can_be_null is not None:
+            self.strings_can_be_null = strings_can_be_null
+        if include_columns is not None:
+            self.include_columns = include_columns
+        if include_missing_columns is not None:
+            self.include_missing_columns = include_missing_columns
 
     @property
     def check_utf8(self):
@@ -292,6 +359,17 @@ cdef class ConvertOptions:
     @check_utf8.setter
     def check_utf8(self, value):
         self.options.check_utf8 = value
+
+    @property
+    def strings_can_be_null(self):
+        """
+        Whether string / binary columns can have null values.
+        """
+        return self.options.strings_can_be_null
+
+    @strings_can_be_null.setter
+    def strings_can_be_null(self, value):
+        self.options.strings_can_be_null = value
 
     @property
     def column_types(self):
@@ -355,8 +433,40 @@ cdef class ConvertOptions:
     def false_values(self, value):
         self.options.false_values = [tobytes(x) for x in value]
 
+    @property
+    def include_columns(self):
+        """
+        The names of columns to include in the Table.
 
-cdef _get_reader(input_file, shared_ptr[InputStream]* out):
+        If empty, the Table will include all columns from the CSV file.
+        If not empty, only these columns will be included, in this order.
+        """
+        return [frombytes(s) for s in self.options.include_columns]
+
+    @include_columns.setter
+    def include_columns(self, value):
+        self.options.include_columns.clear()
+        for item in value:
+            self.options.include_columns.push_back(tobytes(item))
+
+    @property
+    def include_missing_columns(self):
+        """
+        If false, columns in `include_columns` but not in the CSV file will
+        error out.
+        If true, columns in `include_columns` but not in the CSV file will
+        produce a null column (whose type is selected using `column_types`,
+        or null by default).
+        This option is ignored if `include_columns` is empty.
+        """
+        return self.options.include_missing_columns
+
+    @include_missing_columns.setter
+    def include_missing_columns(self, value):
+        self.options.include_missing_columns = value
+
+
+cdef _get_reader(input_file, shared_ptr[CInputStream]* out):
     use_memory_map = False
     get_input_stream(input_file, use_memory_map, out)
 
@@ -394,14 +504,15 @@ def read_csv(input_file, read_options=None, parse_options=None,
         The location of CSV data.  If a string or path, and if it ends
         with a recognized compressed file extension (e.g. ".gz" or ".bz2"),
         the data is automatically decompressed when reading.
-    read_options: ReadOptions, optional
-        Options for the CSV reader (see ReadOptions constructor for defaults)
-    parse_options: ParseOptions, optional
+    read_options: pyarrow.csv.ReadOptions, optional
+        Options for the CSV reader (see pyarrow.csv.ReadOptions constructor
+        for defaults)
+    parse_options: pyarrow.csv.ParseOptions, optional
         Options for the CSV parser
-        (see ParseOptions constructor for defaults)
-    convert_options: ConvertOptions, optional
+        (see pyarrow.csv.ParseOptions constructor for defaults)
+    convert_options: pyarrow.csv.ConvertOptions, optional
         Options for converting CSV data
-        (see ConvertOptions constructor for defaults)
+        (see pyarrow.csv.ConvertOptions constructor for defaults)
     memory_pool: MemoryPool, optional
         Pool to allocate Table memory from
 
@@ -411,7 +522,7 @@ def read_csv(input_file, read_options=None, parse_options=None,
         Contents of the CSV file as a in-memory table.
     """
     cdef:
-        shared_ptr[InputStream] stream
+        shared_ptr[CInputStream] stream
         CCSVReadOptions c_read_options
         CCSVParseOptions c_parse_options
         CCSVConvertOptions c_convert_options

@@ -9,3 +9,15 @@ Dockerfile
 .*\.tar\.gz
 ^windows
 clang_format.sh
+^cran-comments\.md$
+^arrow_.*.tar.gz$
+^arrow_.*.tgz$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^Makefile$
+^.*\.orig$
+^.*\.cmd$
+^autobrew$
+^apache-arrow.rb$
+^.*\.Rhistory$

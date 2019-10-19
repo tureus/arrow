@@ -17,26 +17,43 @@
 
 package org.apache.arrow.flight;
 
+import java.net.URISyntaxException;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Objects;
 
 import org.apache.arrow.flight.impl.Flight;
 
 import com.google.common.collect.ImmutableList;
 
+/**
+ * POJO to convert to/from the underlying protobuf FlightEndpoint.
+ */
 public class FlightEndpoint {
   private List<Location> locations;
   private Ticket ticket;
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param ticket A ticket that describe the key of a data stream.
+   * @param locations  The possible locations the stream can be retrieved from.
+   */
   public FlightEndpoint(Ticket ticket, Location... locations) {
     super();
+    Objects.requireNonNull(ticket);
     this.locations = ImmutableList.copyOf(locations);
     this.ticket = ticket;
   }
 
-  public FlightEndpoint(Flight.FlightEndpoint flt) {
-    locations = flt.getLocationList().stream()
-        .map(t -> new Location(t)).collect(Collectors.toList());
+  /**
+   * Constructs from the protocol buffer representation.
+   */
+  FlightEndpoint(Flight.FlightEndpoint flt) throws URISyntaxException {
+    locations = new ArrayList<>();
+    for (final Flight.Location location : flt.getLocationList()) {
+      locations.add(new Location(location.getUri()));
+    }
     ticket = new Ticket(flt.getTicket());
   }
 
@@ -48,16 +65,42 @@ public class FlightEndpoint {
     return ticket;
   }
 
+  /**
+   * Converts to the protocol buffer representation.
+   */
   Flight.FlightEndpoint toProtocol() {
     Flight.FlightEndpoint.Builder b = Flight.FlightEndpoint.newBuilder()
         .setTicket(ticket.toProtocol());
 
     for (Location l : locations) {
-      b.addLocation(Flight.Location.newBuilder()
-          .setHost(l.getHost())
-          .setPort(l.getPort())
-          .build());
+      b.addLocation(l.toProtocol());
     }
     return b.build();
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    FlightEndpoint that = (FlightEndpoint) o;
+    return locations.equals(that.locations) &&
+        ticket.equals(that.ticket);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(locations, ticket);
+  }
+
+  @Override
+  public String toString() {
+    return "FlightEndpoint{" +
+        "locations=" + locations +
+        ", ticket=" + ticket +
+        '}';
   }
 }

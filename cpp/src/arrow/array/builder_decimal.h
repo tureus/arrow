@@ -28,6 +28,8 @@ class Decimal128;
 
 class ARROW_EXPORT Decimal128Builder : public FixedSizeBinaryBuilder {
  public:
+  using TypeClass = Decimal128Type;
+
   explicit Decimal128Builder(const std::shared_ptr<DataType>& type,
                              MemoryPool* pool ARROW_MEMORY_POOL_DEFAULT);
 
@@ -35,9 +37,22 @@ class ARROW_EXPORT Decimal128Builder : public FixedSizeBinaryBuilder {
   using FixedSizeBinaryBuilder::AppendValues;
   using FixedSizeBinaryBuilder::Reset;
 
-  Status Append(const Decimal128& val);
+  Status Append(Decimal128 val);
+  void UnsafeAppend(Decimal128 val);
+  void UnsafeAppend(util::string_view val);
 
   Status FinishInternal(std::shared_ptr<ArrayData>* out) override;
+
+  /// \cond FALSE
+  using ArrayBuilder::Finish;
+  /// \endcond
+
+  Status Finish(std::shared_ptr<Decimal128Array>* out) { return FinishTyped(out); }
+
+  std::shared_ptr<DataType> type() const override { return decimal_type_; }
+
+ protected:
+  std::shared_ptr<Decimal128Type> decimal_type_;
 };
 
 using DecimalBuilder = Decimal128Builder;

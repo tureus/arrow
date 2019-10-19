@@ -17,10 +17,13 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <random>
+#include <vector>
 
 #include "arrow/type.h"
 #include "arrow/util/visibility.h"
@@ -47,7 +50,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Boolean(int64_t size, double probability,
-                                        double null_probability);
+                                        double null_probability = 0);
 
   /// \brief Generates a random UInt8Array
   ///
@@ -58,7 +61,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> UInt8(int64_t size, uint8_t min, uint8_t max,
-                                      double null_probability);
+                                      double null_probability = 0);
 
   /// \brief Generates a random Int8Array
   ///
@@ -69,7 +72,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Int8(int64_t size, int8_t min, int8_t max,
-                                     double null_probability);
+                                     double null_probability = 0);
 
   /// \brief Generates a random UInt16Array
   ///
@@ -80,7 +83,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> UInt16(int64_t size, uint16_t min, uint16_t max,
-                                       double null_probability);
+                                       double null_probability = 0);
 
   /// \brief Generates a random Int16Array
   ///
@@ -91,7 +94,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Int16(int64_t size, int16_t min, int16_t max,
-                                      double null_probability);
+                                      double null_probability = 0);
 
   /// \brief Generates a random UInt32Array
   ///
@@ -102,7 +105,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> UInt32(int64_t size, uint32_t min, uint32_t max,
-                                       double null_probability);
+                                       double null_probability = 0);
 
   /// \brief Generates a random Int32Array
   ///
@@ -113,7 +116,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Int32(int64_t size, int32_t min, int32_t max,
-                                      double null_probability);
+                                      double null_probability = 0);
 
   /// \brief Generates a random UInt64Array
   ///
@@ -124,7 +127,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> UInt64(int64_t size, uint64_t min, uint64_t max,
-                                       double null_probability);
+                                       double null_probability = 0);
 
   /// \brief Generates a random Int64Array
   ///
@@ -135,7 +138,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Int64(int64_t size, int64_t min, int64_t max,
-                                      double null_probability);
+                                      double null_probability = 0);
 
   /// \brief Generates a random FloatArray
   ///
@@ -146,7 +149,7 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Float32(int64_t size, float min, float max,
-                                        double null_probability);
+                                        double null_probability = 0);
 
   /// \brief Generates a random DoubleArray
   ///
@@ -157,11 +160,11 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> Float64(int64_t size, double min, double max,
-                                        double null_probability);
+                                        double null_probability = 0);
 
   template <typename ArrowType, typename CType = typename ArrowType::c_type>
   std::shared_ptr<arrow::Array> Numeric(int64_t size, CType min, CType max,
-                                        double null_probability) {
+                                        double null_probability = 0) {
     switch (ArrowType::type_id) {
       case Type::UINT8:
         return UInt8(size, static_cast<uint8_t>(min), static_cast<uint8_t>(max),
@@ -209,7 +212,21 @@ class ARROW_EXPORT RandomArrayGenerator {
   ///
   /// \return a generated Array
   std::shared_ptr<arrow::Array> String(int64_t size, int32_t min_length,
-                                       int32_t max_length, double null_probability);
+                                       int32_t max_length, double null_probability = 0);
+
+  /// \brief Generates a random LargeStringArray
+  ///
+  /// \param[in] size the size of the array to generate
+  /// \param[in] min_length the lower bound of the string length
+  ///            determined by the uniform distribution
+  /// \param[in] max_length the upper bound of the string length
+  ///            determined by the uniform distribution
+  /// \param[in] null_probability the probability of a row being null
+  ///
+  /// \return a generated Array
+  std::shared_ptr<arrow::Array> LargeString(int64_t size, int32_t min_length,
+                                            int32_t max_length,
+                                            double null_probability = 0);
 
   /// \brief Generates a random StringArray with repeated values
   ///
@@ -225,14 +242,50 @@ class ARROW_EXPORT RandomArrayGenerator {
   /// \return a generated Array
   std::shared_ptr<arrow::Array> StringWithRepeats(int64_t size, int64_t unique,
                                                   int32_t min_length, int32_t max_length,
-                                                  double null_probability);
+                                                  double null_probability = 0);
 
- private:
+  /// \brief Like StringWithRepeats but return BinaryArray
+  std::shared_ptr<arrow::Array> BinaryWithRepeats(int64_t size, int64_t unique,
+                                                  int32_t min_length, int32_t max_length,
+                                                  double null_probability = 0);
+
   SeedType seed() { return seed_distribution_(seed_rng_); }
 
+ private:
   std::uniform_int_distribution<SeedType> seed_distribution_;
   std::default_random_engine seed_rng_;
 };
 
 }  // namespace random
+
+//
+// Assorted functions
+//
+
+template <typename T, typename U>
+void randint(int64_t N, T lower, T upper, std::vector<U>* out) {
+  const int random_seed = 0;
+  std::default_random_engine gen(random_seed);
+  std::uniform_int_distribution<T> d(lower, upper);
+  out->resize(N, static_cast<T>(0));
+  std::generate(out->begin(), out->end(), [&d, &gen] { return static_cast<U>(d(gen)); });
+}
+
+template <typename T, typename U>
+void random_real(int64_t n, uint32_t seed, T min_value, T max_value,
+                 std::vector<U>* out) {
+  std::default_random_engine gen(seed);
+  std::uniform_real_distribution<T> d(min_value, max_value);
+  out->resize(n, static_cast<T>(0));
+  std::generate(out->begin(), out->end(), [&d, &gen] { return static_cast<U>(d(gen)); });
+}
+
+template <typename T, typename U>
+void rand_uniform_int(int64_t n, uint32_t seed, T min_value, T max_value, U* out) {
+  assert(out || (n == 0));
+  std::default_random_engine gen(seed);
+  std::uniform_int_distribution<T> d(min_value, max_value);
+  std::generate(out, out + n, [&d, &gen] { return static_cast<U>(d(gen)); });
+}
+
 }  // namespace arrow

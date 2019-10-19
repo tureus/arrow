@@ -27,6 +27,7 @@
 
 #include "arrow/util/key_value_metadata.h"
 #include "arrow/util/logging.h"
+#include "arrow/util/stl.h"
 
 using std::size_t;
 
@@ -57,13 +58,13 @@ KeyValueMetadata::KeyValueMetadata() : keys_(), values_() {}
 KeyValueMetadata::KeyValueMetadata(
     const std::unordered_map<std::string, std::string>& map)
     : keys_(UnorderedMapKeys(map)), values_(UnorderedMapValues(map)) {
-  DCHECK_EQ(keys_.size(), values_.size());
+  ARROW_CHECK_EQ(keys_.size(), values_.size());
 }
 
 KeyValueMetadata::KeyValueMetadata(const std::vector<std::string>& keys,
                                    const std::vector<std::string>& values)
     : keys_(keys), values_(values) {
-  DCHECK_EQ(keys.size(), values.size());
+  ARROW_CHECK_EQ(keys.size(), values.size());
 }
 
 void KeyValueMetadata::ToUnorderedMap(
@@ -105,6 +106,17 @@ const std::string& KeyValueMetadata::value(int64_t i) const {
   return values_[i];
 }
 
+std::vector<std::pair<std::string, std::string>> KeyValueMetadata::sorted_pairs() const {
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(size());
+
+  auto indices = internal::ArgSort(keys_);
+  for (const auto i : indices) {
+    pairs.emplace_back(keys_[i], values_[i]);
+  }
+  return pairs;
+}
+
 int KeyValueMetadata::FindKey(const std::string& key) const {
   for (size_t i = 0; i < keys_.size(); ++i) {
     if (keys_[i] == key) {
@@ -119,9 +131,21 @@ std::shared_ptr<KeyValueMetadata> KeyValueMetadata::Copy() const {
 }
 
 bool KeyValueMetadata::Equals(const KeyValueMetadata& other) const {
-  return size() == other.size() &&
-         std::equal(keys_.cbegin(), keys_.cend(), other.keys_.cbegin()) &&
-         std::equal(values_.cbegin(), values_.cend(), other.values_.cbegin());
+  if (size() != other.size()) {
+    return false;
+  }
+
+  auto indices = internal::ArgSort(keys_);
+  auto other_indices = internal::ArgSort(other.keys_);
+
+  for (int64_t i = 0; i < size(); ++i) {
+    auto j = indices[i];
+    auto k = other_indices[i];
+    if (keys_[j] != other.keys_[k] || values_[j] != other.values_[k]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::string KeyValueMetadata::ToString() const {

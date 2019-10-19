@@ -17,6 +17,8 @@
 
 # cython: language_level = 3
 
+from __future__ import absolute_import
+
 from pyarrow.includes.common cimport *
 from pyarrow.includes.libarrow cimport *
 from pyarrow.includes.libarrow cimport CStatus
@@ -51,8 +53,9 @@ cdef class DataType:
         shared_ptr[CDataType] sp_type
         CDataType* type
         bytes pep3118_format
+        object __weakref__
 
-    cdef void init(self, const shared_ptr[CDataType]& type)
+    cdef void init(self, const shared_ptr[CDataType]& type) except *
     cdef Field child(self, int i)
 
 
@@ -61,12 +64,25 @@ cdef class ListType(DataType):
         const CListType* list_type
 
 
+cdef class LargeListType(DataType):
+    cdef:
+        const CLargeListType* list_type
+
+
 cdef class StructType(DataType):
     cdef:
         const CStructType* struct_type
 
     cdef Field field(self, int i)
     cdef Field field_by_name(self, name)
+
+
+cdef class DictionaryMemo:
+    cdef:
+        # Even though the CDictionaryMemo instance is private, we allocate
+        # it on the heap so as to avoid C++ ABI issues with Python wheels.
+        shared_ptr[CDictionaryMemo] sp_memo
+        CDictionaryMemo* memo
 
 
 cdef class DictionaryType(DataType):
@@ -89,6 +105,11 @@ cdef class Time64Type(DataType):
         const CTime64Type* time_type
 
 
+cdef class DurationType(DataType):
+    cdef:
+        const CDurationType* duration_type
+
+
 cdef class FixedSizeBinaryType(DataType):
     cdef:
         const CFixedSizeBinaryType* fixed_size_binary_type
@@ -97,6 +118,20 @@ cdef class FixedSizeBinaryType(DataType):
 cdef class Decimal128Type(FixedSizeBinaryType):
     cdef:
         const CDecimal128Type* decimal128_type
+
+
+cdef class BaseExtensionType(DataType):
+    cdef:
+        const CExtensionType* ext_type
+
+
+cdef class ExtensionType(BaseExtensionType):
+    cdef:
+        const CPyExtensionType* cpy_ext_type
+
+
+cdef class PyExtensionType(ExtensionType):
+    pass
 
 
 cdef class Field:
@@ -163,6 +198,17 @@ cdef class ListValue(ArrayValue):
     cdef int64_t length(self)
 
 
+cdef class LargeListValue(ArrayValue):
+    cdef readonly:
+        DataType value_type
+
+    cdef:
+        CLargeListArray* ap
+
+    cdef getitem(self, int64_t i)
+    cdef int64_t length(self)
+
+
 cdef class StructValue(ArrayValue):
     cdef:
         CStructArray* ap
@@ -192,11 +238,14 @@ cdef class Array(_PandasConvertible):
     cdef:
         shared_ptr[CArray] sp_array
         CArray* ap
+        object __weakref__
 
     cdef readonly:
         DataType type
+        # To allow Table to propagate metadata to pandas.Series
+        object _name
 
-    cdef void init(self, const shared_ptr[CArray]& sp_array)
+    cdef void init(self, const shared_ptr[CArray]& sp_array) except *
     cdef getitem(self, int64_t i)
     cdef int64_t length(self)
 
@@ -210,6 +259,28 @@ cdef class Tensor:
         DataType type
 
     cdef void init(self, const shared_ptr[CTensor]& sp_tensor)
+
+
+cdef class SparseCSRMatrix:
+    cdef:
+        shared_ptr[CSparseCSRMatrix] sp_sparse_tensor
+        CSparseCSRMatrix* stp
+
+    cdef readonly:
+        DataType type
+
+    cdef void init(self, const shared_ptr[CSparseCSRMatrix]& sp_sparse_tensor)
+
+
+cdef class SparseCOOTensor:
+    cdef:
+        shared_ptr[CSparseCOOTensor] sp_sparse_tensor
+        CSparseCOOTensor* stp
+
+    cdef readonly:
+        DataType type
+
+    cdef void init(self, const shared_ptr[CSparseCOOTensor]& sp_sparse_tensor)
 
 
 cdef class NullArray(Array):
@@ -292,6 +363,10 @@ cdef class ListArray(Array):
     pass
 
 
+cdef class LargeListArray(Array):
+    pass
+
+
 cdef class UnionArray(Array):
     pass
 
@@ -309,6 +384,10 @@ cdef class DictionaryArray(Array):
         object _indices, _dictionary
 
 
+cdef class ExtensionArray(Array):
+    pass
+
+
 cdef wrap_array_output(PyObject* output)
 cdef object box_scalar(DataType type,
                        const shared_ptr[CArray]& sp_array,
@@ -320,16 +399,12 @@ cdef class ChunkedArray(_PandasConvertible):
         shared_ptr[CChunkedArray] sp_chunked_array
         CChunkedArray* chunked_array
 
+    cdef readonly:
+        # To allow Table to propagate metadata to pandas.Series
+        object _name
+
     cdef void init(self, const shared_ptr[CChunkedArray]& chunked_array)
     cdef getitem(self, int64_t i)
-
-
-cdef class Column(_PandasConvertible):
-    cdef:
-        shared_ptr[CColumn] sp_column
-        CColumn* column
-
-    cdef void init(self, const shared_ptr[CColumn]& column)
 
 
 cdef class Table(_PandasConvertible):
@@ -366,9 +441,9 @@ cdef class ResizableBuffer(Buffer):
 
 cdef class NativeFile:
     cdef:
-        shared_ptr[InputStream] input_stream
-        shared_ptr[RandomAccessFile] random_access
-        shared_ptr[OutputStream] output_stream
+        shared_ptr[CInputStream] input_stream
+        shared_ptr[CRandomAccessFile] random_access
+        shared_ptr[COutputStream] output_stream
         bint is_readable
         bint is_writable
         bint is_seekable
@@ -379,13 +454,29 @@ cdef class NativeFile:
     # extension classes are technically virtual in the C++ sense) we can expose
     # the arrow::io abstract file interfaces to other components throughout the
     # suite of Arrow C++ libraries
-    cdef set_random_access_file(self, shared_ptr[RandomAccessFile] handle)
-    cdef set_input_stream(self, shared_ptr[InputStream] handle)
-    cdef set_output_stream(self, shared_ptr[OutputStream] handle)
+    cdef set_random_access_file(self, shared_ptr[CRandomAccessFile] handle)
+    cdef set_input_stream(self, shared_ptr[CInputStream] handle)
+    cdef set_output_stream(self, shared_ptr[COutputStream] handle)
 
-    cdef shared_ptr[RandomAccessFile] get_random_access_file(self) except *
-    cdef shared_ptr[InputStream] get_input_stream(self) except *
-    cdef shared_ptr[OutputStream] get_output_stream(self) except *
+    cdef shared_ptr[CRandomAccessFile] get_random_access_file(self) except *
+    cdef shared_ptr[CInputStream] get_input_stream(self) except *
+    cdef shared_ptr[COutputStream] get_output_stream(self) except *
+
+
+cdef class BufferedInputStream(NativeFile):
+    pass
+
+
+cdef class BufferedOutputStream(NativeFile):
+    pass
+
+
+cdef class CompressedInputStream(NativeFile):
+    pass
+
+
+cdef class CompressedOutputStream(NativeFile):
+    pass
 
 
 cdef class _CRecordBatchWriter:
@@ -399,10 +490,10 @@ cdef class _CRecordBatchReader:
 
 
 cdef get_input_stream(object source, c_bool use_memory_map,
-                      shared_ptr[InputStream]* reader)
+                      shared_ptr[CInputStream]* reader)
 cdef get_reader(object source, c_bool use_memory_map,
-                shared_ptr[RandomAccessFile]* reader)
-cdef get_writer(object source, shared_ptr[OutputStream]* writer)
+                shared_ptr[CRandomAccessFile]* reader)
+cdef get_writer(object source, shared_ptr[COutputStream]* writer)
 
 # Default is allow_none=False
 cdef DataType ensure_type(object type, c_bool allow_none=*)
@@ -421,7 +512,6 @@ cdef public object pyarrow_wrap_chunked_array(
 # XXX pyarrow.h calls it `wrap_record_batch`
 cdef public object pyarrow_wrap_batch(const shared_ptr[CRecordBatch]& cbatch)
 cdef public object pyarrow_wrap_buffer(const shared_ptr[CBuffer]& buf)
-cdef public object pyarrow_wrap_column(const shared_ptr[CColumn]& ccolumn)
 cdef public object pyarrow_wrap_data_type(const shared_ptr[CDataType]& type)
 cdef public object pyarrow_wrap_field(const shared_ptr[CField]& field)
 cdef public object pyarrow_wrap_resizable_buffer(
@@ -429,13 +519,20 @@ cdef public object pyarrow_wrap_resizable_buffer(
 cdef public object pyarrow_wrap_schema(const shared_ptr[CSchema]& type)
 cdef public object pyarrow_wrap_table(const shared_ptr[CTable]& ctable)
 cdef public object pyarrow_wrap_tensor(const shared_ptr[CTensor]& sp_tensor)
+cdef public object pyarrow_wrap_sparse_coo_tensor(
+    const shared_ptr[CSparseCOOTensor]& sp_sparse_tensor)
+cdef public object pyarrow_wrap_sparse_csr_matrix(
+    const shared_ptr[CSparseCSRMatrix]& sp_sparse_tensor)
 
 cdef public shared_ptr[CArray] pyarrow_unwrap_array(object array)
 cdef public shared_ptr[CRecordBatch] pyarrow_unwrap_batch(object batch)
 cdef public shared_ptr[CBuffer] pyarrow_unwrap_buffer(object buffer)
-cdef public shared_ptr[CColumn] pyarrow_unwrap_column(object column)
 cdef public shared_ptr[CDataType] pyarrow_unwrap_data_type(object data_type)
 cdef public shared_ptr[CField] pyarrow_unwrap_field(object field)
 cdef public shared_ptr[CSchema] pyarrow_unwrap_schema(object schema)
 cdef public shared_ptr[CTable] pyarrow_unwrap_table(object table)
 cdef public shared_ptr[CTensor] pyarrow_unwrap_tensor(object tensor)
+cdef public shared_ptr[CSparseCOOTensor] pyarrow_unwrap_sparse_coo_tensor(
+    object sparse_tensor)
+cdef public shared_ptr[CSparseCSRMatrix] pyarrow_unwrap_sparse_csr_matrix(
+    object sparse_tensor)

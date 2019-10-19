@@ -18,12 +18,14 @@
 package org.apache.arrow.vector;
 
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.complex.impl.FixedSizeBinaryReaderImpl;
 import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.FixedSizeBinaryHolder;
 import org.apache.arrow.vector.holders.NullableFixedSizeBinaryHolder;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType.FixedSizeBinary;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
@@ -59,9 +61,20 @@ public class FixedSizeBinaryVector extends BaseFixedWidthVector {
    * @param allocator allocator for memory management.
    */
   public FixedSizeBinaryVector(String name, FieldType fieldType, BufferAllocator allocator) {
-    super(name, allocator, fieldType, ((FixedSizeBinary) fieldType.getType()).getByteWidth());
+    this(new Field(name, fieldType, null), allocator);
+  }
+
+  /**
+   * Instantiate a FixedSizeBinaryVector. This doesn't allocate any memory for
+   * the data in vector.
+   *
+   * @param field field materialized by this vector
+   * @param allocator allocator for memory management.
+   */
+  public FixedSizeBinaryVector(Field field, BufferAllocator allocator) {
+    super(field, allocator, ((FixedSizeBinary) field.getFieldType().getType()).getByteWidth());
     reader = new FixedSizeBinaryReaderImpl(FixedSizeBinaryVector.this);
-    byteWidth = ((FixedSizeBinary) fieldType.getType()).getByteWidth();
+    byteWidth = ((FixedSizeBinary) field.getFieldType().getType()).getByteWidth();
   }
 
   /**
@@ -101,7 +114,7 @@ public class FixedSizeBinaryVector extends BaseFixedWidthVector {
   public byte[] get(int index) {
     assert index >= 0;
     if (isSet(index) == 0) {
-      throw new IllegalStateException("Value at index is null");
+      return null;
     }
     final byte[] dst = new byte[byteWidth];
     valueBuffer.getBytes(index * byteWidth, dst, 0, byteWidth);
@@ -134,42 +147,7 @@ public class FixedSizeBinaryVector extends BaseFixedWidthVector {
    */
   @Override
   public byte[] getObject(int index) {
-    assert index >= 0;
-    if (isSet(index) == 0) {
-      return null;
-    } else {
-      final byte[] dst = new byte[byteWidth];
-      valueBuffer.getBytes(index * byteWidth, dst, 0, byteWidth);
-      return dst;
-    }
-  }
-
-  /**
-   * Copy a cell value from a particular index in source vector to a particular
-   * position in this vector.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from      source vector
-   */
-  public void copyFrom(int fromIndex, int thisIndex, FixedSizeBinaryVector from) {
-    BitVectorHelper.setValidityBit(validityBuffer, thisIndex, from.isSet(fromIndex));
-    from.valueBuffer.getBytes(fromIndex * byteWidth, valueBuffer,
-        thisIndex * byteWidth, byteWidth);
-  }
-
-  /**
-   * Same as {@link #copyFrom(int, int, FixedSizeBinaryVector)} except that
-   * it handles the case when the capacity of the vector needs to be expanded
-   * before copy.
-   *
-   * @param fromIndex position to copy from in source vector
-   * @param thisIndex position to copy to in this vector
-   * @param from      source vector
-   */
-  public void copyFromSafe(int fromIndex, int thisIndex, FixedSizeBinaryVector from) {
-    handleSafe(thisIndex);
-    copyFrom(fromIndex, thisIndex, from);
+    return get(index);
   }
 
   public int getByteWidth() {
@@ -183,18 +161,27 @@ public class FixedSizeBinaryVector extends BaseFixedWidthVector {
    |                                                                |
    *----------------------------------------------------------------*/
 
+  /** Sets the value at index to the provided one. */
   public void set(int index, byte[] value) {
     assert index >= 0;
+    Preconditions.checkNotNull(value, "expecting a valid byte array");
     assert byteWidth <= value.length;
     BitVectorHelper.setValidityBitToOne(validityBuffer, index);
     valueBuffer.setBytes(index * byteWidth, value, 0, byteWidth);
   }
 
+  /**
+   * Same as {@link #set(int, byte[])} but reallocates if <code>index</code>
+   * is larger than capacity.
+   */
   public void setSafe(int index, byte[] value) {
     handleSafe(index);
     set(index, value);
   }
 
+  /**
+   * Sets the value if isSet is positive, otherwise sets the index to null/invalid.
+   */
   public void set(int index, int isSet, byte[] value) {
     if (isSet > 0) {
       set(index, value);
@@ -315,11 +302,6 @@ public class FixedSizeBinaryVector extends BaseFixedWidthVector {
   public void setSafe(int index, NullableFixedSizeBinaryHolder holder) {
     handleSafe(index);
     set(index, holder);
-  }
-
-  public void setNull(int index) {
-    handleSafe(index);
-    BitVectorHelper.setValidityBit(validityBuffer, index, 0);
   }
 
   /**

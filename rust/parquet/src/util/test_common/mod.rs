@@ -16,6 +16,7 @@
 // under the License.
 
 pub mod file_util;
+pub mod page_util;
 pub mod rand_gen;
 
 pub use self::rand_gen::random_bools;
@@ -27,3 +28,5 @@ pub use self::rand_gen::RandGen;
 pub use self::file_util::get_temp_file;
 pub use self::file_util::get_test_file;
 pub use self::file_util::get_test_path;
+
+pub use self::page_util::make_pages;

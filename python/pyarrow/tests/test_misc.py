@@ -45,7 +45,6 @@ def test_cpu_count():
 @pytest.mark.parametrize('klass', [
     pa.Field,
     pa.Schema,
-    pa.Column,
     pa.ChunkedArray,
     pa.RecordBatch,
     pa.Table,
@@ -86,6 +85,7 @@ def test_cpu_count():
     pa.TimestampArray,
     pa.Time32Array,
     pa.Time64Array,
+    pa.DurationArray,
     pa.Decimal128Array,
     pa.StructArray,
     pa.ArrayValue,
@@ -107,6 +107,7 @@ def test_cpu_count():
     pa.Time32Value,
     pa.Time64Value,
     pa.TimestampValue,
+    pa.DurationValue,
     pa.StringValue,
     pa.BinaryValue,
     pa.FixedSizeBinaryValue,

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 os: osx
-osx_image: xcode8.3
+osx_image: xcode9.4
 sudo: required
 language: cpp
 compiler: clang
@@ -33,11 +33,12 @@ env:
     - ARROW_TRAVIS_GANDIVA=1
 
 before_script:
-  - git clone -b {{ arrow.branch }} {{ arrow.remote }} arrow
-  - git -C arrow checkout {{ arrow.head }}
+  - git clone --no-checkout {{ arrow.remote }} arrow
+  - git -C arrow fetch -t {{ arrow.remote }} {{ arrow.branch }}
+  - if [ $CROSSBOW_USE_COMMIT_ID == true ]; then git -C arrow checkout {{ arrow.head }}; else git -C arrow checkout FETCH_HEAD; fi
+
   - export TRAVIS_BUILD_DIR=$TRAVIS_BUILD_DIR/arrow
   - brew update
-  - brew upgrade cmake
   - brew install bison flex llvm@7
 
 script:

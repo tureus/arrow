@@ -25,9 +25,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.util.DecimalUtility;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -162,6 +160,27 @@ public class TestDecimalVector {
   }
 
   @Test
+  public void testLongReadWrite() {
+    try (DecimalVector decimalVector = TestUtils.newVector(DecimalVector.class, "decimal",
+            new ArrowType.Decimal(38, 0), allocator)) {
+      decimalVector.allocateNew();
+
+      long[] longValues = {0L, -2L, Long.MAX_VALUE, Long.MIN_VALUE, 187L};
+
+      for (int i = 0; i < longValues.length; ++i) {
+        decimalVector.set(i, longValues[i]);
+      }
+
+      decimalVector.setValueCount(longValues.length);
+
+      for (int i = 0; i < longValues.length; ++i) {
+        assertEquals(new BigDecimal(longValues[i]), decimalVector.getObject(i));
+      }
+    }
+  }
+
+
+  @Test
   public void testBigDecimalReadWrite() {
     try (DecimalVector decimalVector = TestUtils.newVector(DecimalVector.class, "decimal",
       new ArrowType.Decimal(38, 9), allocator);) {
@@ -258,12 +277,12 @@ public class TestDecimalVector {
          ArrowBuf buf = allocator.buffer(8);) {
       decimalVector.allocateNew();
 
-      // add a positive value equivalen to 705.32
+      // add a positive value equivalent to 705.32
       int val = 70532;
       buf.setInt(0, val);
       decimalVector.setSafe(0, 0, buf, 4);
 
-      // add a -ve value equivalen to -705.32
+      // add a -ve value equivalent to -705.32
       val = -70532;
       buf.setInt(4, val);
       decimalVector.setSafe(1, 4, buf, 4);

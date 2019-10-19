@@ -21,6 +21,8 @@ set -e
 set -u
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARROW_DIR="${SOURCE_DIR}/../.."
+ARROW_SITE_DIR="${SOURCE_DIR}/../../../arrow-site"
 
 if [ "$#" -ne 2 ]; then
   echo "Usage: $0 <previous-version> <version>"
@@ -30,13 +32,19 @@ fi
 previous_version=$1
 version=$2
 
-site_dir="${SOURCE_DIR}/../../site"
-release_dir="${site_dir}/_release"
+branch_name=release-note-${version}
+release_dir="${ARROW_SITE_DIR}/_release"
 announce_file="${release_dir}/${version}.md"
-versions_yml="${site_dir}/_data/versions.yml"
+versions_yml="${ARROW_SITE_DIR}/_data/versions.yml"
+
+pushd "${ARROW_SITE_DIR}"
+git checkout master
+git checkout -b ${branch_name}
+popd
+
+pushd "${ARROW_DIR}"
 
 release_date=$(LANG=C date "+%-d %B %Y")
-
 previous_tag_date=$(git log -n 1 --pretty=%aI apache-arrow-${previous_version})
 rough_previous_release_date=$(date --date "${previous_tag_date}" +%s)
 rough_release_date=$(date +%s)
@@ -46,11 +54,21 @@ rough_n_development_months=$((
 
 git_tag=apache-arrow-${version}
 git_range=apache-arrow-${previous_version}..${git_tag}
-n_commits=$(git log --pretty=oneline ${git_range} | wc -l)
-contributors_command_line="git shortlog -sn ${git_range}"
-n_contributors=$(${contributors_command_line} | wc -l)
+
 committers_command_line="git shortlog -csn ${git_range}"
+contributors_command_line="git shortlog -sn ${git_range}"
+
+committers=$(${committers_command_line})
+contributors=$(${contributors_command_line})
+
+n_commits=$(git log --pretty=oneline ${git_range} | wc -l)
+n_contributors=$(${contributors_command_line} | wc -l)
+
 git_tag_hash=$(git log -n 1 --pretty=%H ${git_tag})
+
+popd
+
+pushd "${ARROW_SITE_DIR}"
 
 # Add announce for the current version
 cat <<ANNOUNCE > "${announce_file}"
@@ -100,7 +118,7 @@ This release includes ${n_commits} commits from ${n_contributors} distinct contr
 $ ${contributors_command_line}
 ANNOUNCE
 
-${contributors_command_line} >> "${announce_file}"
+echo "${contributors}" >> "${announce_file}"
 
 cat <<ANNOUNCE >> "${announce_file}"
 \`\`\`
@@ -113,7 +131,7 @@ The following Apache committers merged contributed patches to the repository.
 $ ${committers_command_line}
 ANNOUNCE
 
-${committers_command_line} >> "${announce_file}"
+echo "${committers}" >> "${announce_file}"
 
 cat <<ANNOUNCE >> "${announce_file}"
 \`\`\`
@@ -133,6 +151,7 @@ cat <<ANNOUNCE >> "${announce_file}"
 [5]: https://bintray.com/apache/arrow/ubuntu/${version}/
 [6]: https://github.com/apache/arrow/releases/tag/apache-arrow-${version}
 ANNOUNCE
+git add "${announce_file}"
 
 
 # Update index
@@ -187,6 +206,8 @@ for md_file in ${announce_files}; do
   echo "[${i}]: {{ site.baseurl }}/release/${html_file}" >> ${index_file}
 done
 
+git add ${index_file}
+
 popd
 
 
@@ -226,3 +247,20 @@ current:
   sha256: 'https://www.apache.org/dist/arrow/arrow-${version}/apache-arrow-${version}.tar.gz.sha256'
   sha512: 'https://www.apache.org/dist/arrow/arrow-${version}/apache-arrow-${version}.tar.gz.sha512'
 YAML
+git add "${versions_yml}"
+
+git commit -m "[Website] Add release note for ${version}"
+git push -u origin ${branch_name}
+
+github_url=$(git remote get-url origin | \
+               sed \
+                 -e 's,^git@github.com:,https://github.com/,' \
+                 -e 's,\.git$,,')
+
+echo "Success!"
+echo "1. Open a JIRA issue:"
+echo "  https://issues.apache.org/jira/projects/ARROW/issues/"
+echo "2. Create a pull request:"
+echo "  ${github_url}/pull/new/${branch_name}"
+
+popd

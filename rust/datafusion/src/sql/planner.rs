@@ -39,12 +39,12 @@ pub trait SchemaProvider {
 
 /// SQL query planner
 pub struct SqlToRel {
-    schema_provider: Arc<SchemaProvider>,
+    schema_provider: Arc<dyn SchemaProvider>,
 }
 
 impl SqlToRel {
     /// Create a new query planner
-    pub fn new(schema_provider: Arc<SchemaProvider>) -> Self {
+    pub fn new(schema_provider: Arc<dyn SchemaProvider>) -> Self {
         SqlToRel { schema_provider }
     }
 
@@ -88,10 +88,7 @@ impl SqlToRel {
                 // collect aggregate expressions
                 let aggr_expr: Vec<Expr> = expr
                     .iter()
-                    .filter(|e| match e {
-                        Expr::AggregateFunction { .. } => true,
-                        _ => false,
-                    })
+                    .filter(|e| is_aggregate_expr(e))
                     .map(|e| e.clone())
                     .collect();
 
@@ -108,7 +105,6 @@ impl SqlToRel {
                             .collect::<Result<Vec<Expr>>>()?,
                         None => vec![],
                     };
-                    //println!("GROUP BY: {:?}", group_expr);
 
                     let mut all_fields: Vec<Expr> = group_expr.clone();
                     aggr_expr.iter().for_each(|x| all_fields.push(x.clone()));
@@ -118,28 +114,57 @@ impl SqlToRel {
                         input_schema,
                     )?);
 
-                    //TODO: selection, projection, everything else
-                    Ok(Arc::new(LogicalPlan::Aggregate {
+                    let group_by_count = group_expr.len();
+                    let aggr_count = aggr_expr.len();
+
+                    let aggregate = Arc::new(LogicalPlan::Aggregate {
                         input: aggregate_input,
                         group_expr,
                         aggr_expr,
                         schema: Arc::new(aggr_schema),
-                    }))
+                    });
+
+                    // wrap in projection to preserve final order of fields
+                    let mut projected_fields =
+                        Vec::with_capacity(group_by_count + aggr_count);
+                    let mut group_expr_index = 0;
+                    let mut aggr_expr_index = 0;
+                    for i in 0..expr.len() {
+                        if is_aggregate_expr(&expr[i]) {
+                            projected_fields.push(group_by_count + aggr_expr_index);
+                            aggr_expr_index += 1;
+                        } else {
+                            projected_fields.push(group_expr_index);
+                            group_expr_index += 1;
+                        }
+                    }
+
+                    // determine if projection is needed or not
+                    // NOTE this would be better done later in a query optimizer rule
+                    let mut projection_needed = false;
+                    for i in 0..projected_fields.len() {
+                        if projected_fields[i] != i {
+                            projection_needed = true;
+                            break;
+                        }
+                    }
+
+                    if projection_needed {
+                        let projection = create_projection(
+                            projected_fields.iter().map(|i| Expr::Column(*i)).collect(),
+                            aggregate,
+                        )?;
+                        Ok(Arc::new(projection))
+                    } else {
+                        Ok(aggregate)
+                    }
                 } else {
                     let projection_input: Arc<LogicalPlan> = match selection_plan {
                         Some(s) => Arc::new(s),
                         _ => input.clone(),
                     };
 
-                    let projection_schema = Arc::new(Schema::new(
-                        utils::exprlist_to_fields(&expr, input_schema.as_ref())?,
-                    ));
-
-                    let projection = LogicalPlan::Projection {
-                        expr: expr,
-                        input: projection_input,
-                        schema: projection_schema.clone(),
-                    };
+                    let projection = create_projection(expr, projection_input)?;
 
                     if let &Some(_) = having {
                         return Err(ExecutionError::General(
@@ -175,8 +200,17 @@ impl SqlToRel {
                     let limit_plan = match limit {
                         &Some(ref limit_expr) => {
                             let input_schema = order_by_plan.schema();
-                            let limit_rex =
-                                self.sql_to_rex(&limit_expr, &input_schema.clone())?;
+
+                            let limit_rex = match self
+                                .sql_to_rex(&limit_expr, &input_schema.clone())?
+                            {
+                                Expr::Literal(ScalarValue::Int64(n)) => {
+                                    Ok(Expr::Literal(ScalarValue::UInt32(n as u32)))
+                                }
+                                _ => Err(ExecutionError::General(
+                                    "Unexpected expression for LIMIT clause".to_string(),
+                                )),
+                            }?;
 
                             LogicalPlan::Limit {
                                 expr: limit_rex,
@@ -196,7 +230,8 @@ impl SqlToRel {
                     Some(schema) => Ok(Arc::new(LogicalPlan::TableScan {
                         schema_name: String::from("default"),
                         table_name: id.clone(),
-                        schema: schema.clone(),
+                        table_schema: schema.clone(),
+                        projected_schema: schema.clone(),
                         projection: None,
                     })),
                     None => Err(ExecutionError::General(format!(
@@ -365,6 +400,30 @@ impl SqlToRel {
                 sql
             ))),
         }
+    }
+}
+
+/// Create a projection
+fn create_projection(expr: Vec<Expr>, input: Arc<LogicalPlan>) -> Result<LogicalPlan> {
+    let input_schema = input.schema();
+
+    let schema = Arc::new(Schema::new(utils::exprlist_to_fields(
+        &expr,
+        input_schema.as_ref(),
+    )?));
+
+    Ok(LogicalPlan::Projection {
+        expr,
+        input,
+        schema,
+    })
+}
+
+/// Determine if an expression is an aggregate expression or not
+fn is_aggregate_expr(e: &Expr) -> bool {
+    match e {
+        Expr::AggregateFunction { .. } => true,
+        _ => false,
     }
 }
 
@@ -560,5 +619,4 @@ mod tests {
             }
         }
     }
-
 }

@@ -21,14 +21,14 @@ import java.util.Calendar;
 import java.util.Map;
 
 import org.apache.arrow.memory.BaseAllocator;
-
-import com.google.common.base.Preconditions;
+import org.apache.arrow.util.Preconditions;
 
 /**
  * This class configures the JDBC-to-Arrow conversion process.
  * <p>
  * The allocator is used to construct the {@link org.apache.arrow.vector.VectorSchemaRoot},
- * and the calendar is used to define the time zone of any {@link org.apahe.arrow.vector.pojo.ArrowType.Timestamp}
+ * and the calendar is used to define the time zone of any
+ * {@link org.apache.arrow.vector.types.pojo.ArrowType.Timestamp}
  * fields that are created during the conversion.  Neither field may be <code>null</code>.
  * </p>
  * <p>
@@ -52,6 +52,21 @@ public final class JdbcToArrowConfig {
   private boolean includeMetadata;
   private Map<Integer, JdbcFieldInfo> arraySubTypesByColumnIndex;
   private Map<String, JdbcFieldInfo> arraySubTypesByColumnName;
+
+  public static final int DEFAULT_TARGET_BATCH_SIZE = 1024;
+  public static final int NO_LIMIT_BATCH_SIZE = -1;
+
+  /**
+   * The maximum rowCount to read each time when partially convert data.
+   * Default value is 1024 and -1 means disable partial read.
+   * default is -1 which means disable partial read.
+   * Note that this flag only useful for {@link JdbcToArrow#sqlToArrowVectorIterator}
+   * 1) if targetBatchSize != -1, it will convert full data into multiple vectors
+   * with valueCount no more than targetBatchSize.
+   * 2) if targetBatchSize == -1, it will convert full data into a single vector in {@link ArrowVectorIterator}
+   * </p>
+   */
+  private int targetBatchSize = DEFAULT_TARGET_BATCH_SIZE;
 
   /**
    * Constructs a new configuration from the provided allocator and calendar.  The <code>allocator</code>
@@ -87,19 +102,21 @@ public final class JdbcToArrowConfig {
       Calendar calendar,
       boolean includeMetadata,
       Map<Integer, JdbcFieldInfo> arraySubTypesByColumnIndex,
-      Map<String, JdbcFieldInfo> arraySubTypesByColumnName) {
+      Map<String, JdbcFieldInfo> arraySubTypesByColumnName,
+      int targetBatchSize) {
 
     this(allocator, calendar);
 
     this.includeMetadata = includeMetadata;
     this.arraySubTypesByColumnIndex = arraySubTypesByColumnIndex;
     this.arraySubTypesByColumnName = arraySubTypesByColumnName;
+    this.targetBatchSize = targetBatchSize;
   }
 
   /**
    * The calendar to use when defining Arrow Timestamp fields
-   * and retrieving {@link Date}, {@link Time}, or {@link Timestamp}
-   * data types from the {@link ResultSet}, or <code>null</code> if not converting.
+   * and retrieving {@link java.sql.Date}, {@link java.sql.Time}, or {@link java.sql.Timestamp}
+   * data types from the {@link java.sql.ResultSet}, or <code>null</code> if not converting.
    *
    * @return the calendar.
    */
@@ -125,6 +142,13 @@ public final class JdbcToArrowConfig {
   }
 
   /**
+   * Get the target batch size for partial read.
+   */
+  public int getTargetBatchSize() {
+    return targetBatchSize;
+  }
+
+  /**
    * Returns the array sub-type {@link JdbcFieldInfo} defined for the provided column index.
    *
    * @param index The {@link java.sql.ResultSetMetaData} column index of an {@link java.sql.Types#ARRAY} type.
@@ -141,7 +165,7 @@ public final class JdbcToArrowConfig {
   /**
    * Returns the array sub-type {@link JdbcFieldInfo} defined for the provided column name.
    *
-   * @param index The {@link java.sql.ResultSetMetaData} column name of an {@link java.sql.Types#ARRAY} type.
+   * @param name The {@link java.sql.ResultSetMetaData} column name of an {@link java.sql.Types#ARRAY} type.
    * @return The {@link JdbcFieldInfo} for that array's sub-type, or <code>null</code> if not defined.
    */
   public JdbcFieldInfo getArraySubTypeByColumnName(String name) {

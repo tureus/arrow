@@ -34,11 +34,16 @@ class ARROW_EXPORT ExtensionType : public DataType {
  public:
   static constexpr Type::type type_id = Type::EXTENSION;
 
+  static constexpr const char* type_name() { return "extension"; }
+
   /// \brief The type of array used to represent this extension type's data
   std::shared_ptr<DataType> storage_type() const { return storage_type_; }
 
+  DataTypeLayout layout() const override;
+
   std::string ToString() const override;
-  std::string name() const override;
+
+  std::string name() const override { return "extension"; }
 
   /// \brief Unique name of extension type used to identify type for
   /// serialization
@@ -82,7 +87,18 @@ class ARROW_EXPORT ExtensionType : public DataType {
 /// \brief Base array class for user-defined extension types
 class ARROW_EXPORT ExtensionArray : public Array {
  public:
-  explicit ExtensionArray(const std::shared_ptr<ArrayData>& data) { SetData(data); }
+  /// \brief Construct an ExtensionArray from an ArrayData.
+  ///
+  /// The ArrayData must have the right ExtensionType.
+  explicit ExtensionArray(const std::shared_ptr<ArrayData>& data);
+
+  /// \brief Construct an ExtensionArray from a type and the underlying storage.
+  ExtensionArray(const std::shared_ptr<DataType>& type,
+                 const std::shared_ptr<Array>& storage);
+
+  const ExtensionType* extension_type() const {
+    return internal::checked_cast<const ExtensionType*>(data_->type.get());
+  }
 
   /// \brief The physical storage for the extension array
   std::shared_ptr<Array> storage() const { return storage_; }
@@ -90,6 +106,20 @@ class ARROW_EXPORT ExtensionArray : public Array {
  protected:
   void SetData(const std::shared_ptr<ArrayData>& data);
   std::shared_ptr<Array> storage_;
+};
+
+class ARROW_EXPORT ExtensionTypeRegistry {
+ public:
+  /// \brief Provide access to the global registry to allow code to control for
+  /// race conditions in registry teardown when some types need to be
+  /// unregistered and destroyed first
+  static std::shared_ptr<ExtensionTypeRegistry> GetGlobalRegistry();
+
+  virtual ~ExtensionTypeRegistry() = default;
+
+  virtual Status RegisterType(std::shared_ptr<ExtensionType> type) = 0;
+  virtual Status UnregisterType(const std::string& type_name) = 0;
+  virtual std::shared_ptr<ExtensionType> GetType(const std::string& type_name) = 0;
 };
 
 /// \brief Register an extension type globally. The name returned by the type's
@@ -111,5 +141,8 @@ Status UnregisterExtensionType(const std::string& type_name);
 /// \return the globally-registered extension type
 ARROW_EXPORT
 std::shared_ptr<ExtensionType> GetExtensionType(const std::string& type_name);
+
+ARROW_EXPORT extern const char kExtensionTypeKeyName[];
+ARROW_EXPORT extern const char kExtensionMetadataKeyName[];
 
 }  // namespace arrow

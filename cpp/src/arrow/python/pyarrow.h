@@ -24,11 +24,15 @@
 
 #include "arrow/python/visibility.h"
 
+#include "arrow/sparse_tensor.h"
+
+// Work around ARROW-2317 (C linkage warning from Cython)
+extern "C++" {
+
 namespace arrow {
 
 class Array;
 class Buffer;
-class Column;
 class DataType;
 class Field;
 class RecordBatch;
@@ -39,6 +43,7 @@ class Tensor;
 
 namespace py {
 
+// Returns 0 on success, -1 on error.
 ARROW_PYTHON_EXPORT int import_pyarrow();
 
 ARROW_PYTHON_EXPORT bool is_buffer(PyObject* buffer);
@@ -61,14 +66,24 @@ ARROW_PYTHON_EXPORT PyObject* wrap_schema(const std::shared_ptr<Schema>& schema)
 ARROW_PYTHON_EXPORT bool is_array(PyObject* array);
 ARROW_PYTHON_EXPORT Status unwrap_array(PyObject* array, std::shared_ptr<Array>* out);
 ARROW_PYTHON_EXPORT PyObject* wrap_array(const std::shared_ptr<Array>& array);
+ARROW_PYTHON_EXPORT PyObject* wrap_chunked_array(
+    const std::shared_ptr<ChunkedArray>& array);
 
 ARROW_PYTHON_EXPORT bool is_tensor(PyObject* tensor);
 ARROW_PYTHON_EXPORT Status unwrap_tensor(PyObject* tensor, std::shared_ptr<Tensor>* out);
 ARROW_PYTHON_EXPORT PyObject* wrap_tensor(const std::shared_ptr<Tensor>& tensor);
 
-ARROW_PYTHON_EXPORT bool is_column(PyObject* column);
-ARROW_PYTHON_EXPORT Status unwrap_column(PyObject* column, std::shared_ptr<Column>* out);
-ARROW_PYTHON_EXPORT PyObject* wrap_column(const std::shared_ptr<Column>& column);
+ARROW_PYTHON_EXPORT bool is_sparse_tensor_coo(PyObject* sparse_tensor);
+ARROW_PYTHON_EXPORT Status
+unwrap_sparse_coo_tensor(PyObject* sparse_tensor, std::shared_ptr<SparseCOOTensor>* out);
+ARROW_PYTHON_EXPORT PyObject* wrap_sparse_coo_tensor(
+    const std::shared_ptr<SparseCOOTensor>& sparse_tensor);
+
+ARROW_PYTHON_EXPORT bool is_sparse_tensor_csr(PyObject* sparse_tensor);
+ARROW_PYTHON_EXPORT Status
+unwrap_sparse_csr_matrix(PyObject* sparse_tensor, std::shared_ptr<SparseCSRMatrix>* out);
+ARROW_PYTHON_EXPORT PyObject* wrap_sparse_csr_matrix(
+    const std::shared_ptr<SparseCSRMatrix>& sparse_tensor);
 
 ARROW_PYTHON_EXPORT bool is_table(PyObject* table);
 ARROW_PYTHON_EXPORT Status unwrap_table(PyObject* table, std::shared_ptr<Table>* out);
@@ -80,7 +95,14 @@ ARROW_PYTHON_EXPORT Status unwrap_record_batch(PyObject* batch,
 ARROW_PYTHON_EXPORT PyObject* wrap_record_batch(
     const std::shared_ptr<RecordBatch>& batch);
 
+namespace internal {
+
+ARROW_PYTHON_EXPORT int check_status(const Status& status);
+
+}  // namespace internal
 }  // namespace py
 }  // namespace arrow
+
+}  // extern "C++"
 
 #endif  // ARROW_PYTHON_PYARROW_H

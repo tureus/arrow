@@ -25,6 +25,7 @@ import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.NullableTimeStampNanoHolder;
 import org.apache.arrow.vector.holders.TimeStampNanoHolder;
 import org.apache.arrow.vector.types.Types.MinorType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.DateUtility;
 import org.apache.arrow.vector.util.TransferPair;
@@ -34,7 +35,7 @@ import org.apache.arrow.vector.util.TransferPair;
  * timestamp (nanosecond resolution) values which could be null. A validity buffer
  * (bit vector) is maintained to track which elements in the vector are null.
  */
-public class TimeStampNanoVector extends TimeStampVector {
+public final class TimeStampNanoVector extends TimeStampVector {
   private final FieldReader reader;
 
   /**
@@ -58,6 +59,18 @@ public class TimeStampNanoVector extends TimeStampVector {
    */
   public TimeStampNanoVector(String name, FieldType fieldType, BufferAllocator allocator) {
     super(name, fieldType, allocator);
+    reader = new TimeStampNanoReaderImpl(TimeStampNanoVector.this);
+  }
+
+  /**
+   * Instantiate a TimeStampNanoVector. This doesn't allocate any memory for
+   * the data in vector.
+   *
+   * @param field Field materialized by this vector
+   * @param allocator allocator for memory management.
+   */
+  public TimeStampNanoVector(Field field, BufferAllocator allocator) {
+    super(field, allocator);
     reader = new TimeStampNanoReaderImpl(TimeStampNanoVector.this);
   }
 

@@ -23,6 +23,7 @@ import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.ZeroVector;
 import org.apache.arrow.vector.complex.AbstractStructVector;
+import org.apache.arrow.vector.complex.FixedSizeListVector;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.complex.UnionVector;
@@ -41,11 +42,14 @@ import io.netty.buffer.ArrowBuf;
  * can start as a specific type, and this class will promote the writer to a UnionWriter if a call is made that the
  * specifically typed writer cannot handle. A new UnionVector is created, wrapping the original vector, and replaces the
  * original vector in the parent vector, which can be either an AbstractStructVector or a ListVector.
+ *
+ * <p>The writer used can either be for single elements (struct) or lists.</p>
  */
 public class PromotableWriter extends AbstractPromotableFieldWriter {
 
   private final AbstractStructVector parentContainer;
   private final ListVector listVector;
+  private final FixedSizeListVector fixedListVector;
   private final NullableStructWriterFactory nullableStructWriterFactory;
   private int position;
   private static final int MAX_DECIMAL_PRECISION = 38;
@@ -61,30 +65,86 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
   private State state;
   private FieldWriter writer;
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to write.
+   * @param parentContainer The parent container for the vector.
+   */
   public PromotableWriter(ValueVector v, AbstractStructVector parentContainer) {
     this(v, parentContainer, NullableStructWriterFactory.getNullableStructWriterFactoryInstance());
   }
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to initialize the writer with.
+   * @param parentContainer The parent container for the vector.
+   * @param nullableStructWriterFactory The factory to create the delegate writer.
+   */
   public PromotableWriter(
       ValueVector v,
       AbstractStructVector parentContainer,
       NullableStructWriterFactory nullableStructWriterFactory) {
     this.parentContainer = parentContainer;
     this.listVector = null;
+    this.fixedListVector = null;
     this.nullableStructWriterFactory = nullableStructWriterFactory;
     init(v);
   }
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to initialize the writer with.
+   * @param listVector The vector that serves as a parent of v.
+   */
   public PromotableWriter(ValueVector v, ListVector listVector) {
     this(v, listVector, NullableStructWriterFactory.getNullableStructWriterFactoryInstance());
   }
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to initialize the writer with.
+   * @param fixedListVector The vector that serves as a parent of v.
+   */
+  public PromotableWriter(ValueVector v, FixedSizeListVector fixedListVector) {
+    this(v, fixedListVector, NullableStructWriterFactory.getNullableStructWriterFactoryInstance());
+  }
+
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to initialize the writer with.
+   * @param listVector The vector that serves as a parent of v.
+   * @param nullableStructWriterFactory The factory to create the delegate writer.
+   */
   public PromotableWriter(
       ValueVector v,
       ListVector listVector,
       NullableStructWriterFactory nullableStructWriterFactory) {
     this.listVector = listVector;
     this.parentContainer = null;
+    this.fixedListVector = null;
+    this.nullableStructWriterFactory = nullableStructWriterFactory;
+    init(v);
+  }
+
+  /**
+   * Constructs a new instance.
+   *
+   * @param v The vector to initialize the writer with.
+   * @param fixedListVector The vector that serves as a parent of v.
+   * @param nullableStructWriterFactory The factory to create the delegate writer.
+   */
+  public PromotableWriter(
+      ValueVector v,
+      FixedSizeListVector fixedListVector,
+      NullableStructWriterFactory nullableStructWriterFactory) {
+    this.fixedListVector = fixedListVector;
+    this.parentContainer = null;
+    this.listVector = null;
     this.nullableStructWriterFactory = nullableStructWriterFactory;
     init(v);
   }
@@ -98,6 +158,14 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
       state = State.UNTYPED;
     } else {
       setWriter(v);
+    }
+  }
+
+  @Override
+  public void setAddVectorAsNullable(boolean nullable) {
+    super.setAddVectorAsNullable(nullable);
+    if (writer instanceof AbstractFieldWriter) {
+      ((AbstractFieldWriter) writer).setAddVectorAsNullable(nullable);
     }
   }
 
@@ -152,7 +220,9 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
       if (arrowType == null) {
         arrowType = type.getType();
       }
-      ValueVector v = listVector.addOrGetVector(FieldType.nullable(arrowType)).getVector();
+      FieldType fieldType = new FieldType(addVectorAsNullable, arrowType, null, null);
+      ValueVector v = listVector != null ? listVector.addOrGetVector(fieldType).getVector() :
+          fixedListVector.addOrGetVector(fieldType).getVector();
       v.allocateNew();
       setWriter(v, arrowType);
       writer.setPosition(position);
@@ -182,6 +252,8 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
       unionVector.allocateNew();
     } else if (listVector != null) {
       unionVector = listVector.promoteToUnion();
+    } else if (fixedListVector != null) {
+      unionVector = fixedListVector.promoteToUnion();
     }
     unionVector.addVector((FieldVector) tp.getTo());
     writer = new UnionWriter(unionVector, nullableStructWriterFactory);

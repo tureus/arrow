@@ -19,7 +19,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <sstream>
 
 #include <lz4.h>
 #include <lz4frame.h>
@@ -62,6 +61,21 @@ class LZ4Decompressor : public Decompressor {
     } else {
       return Status::OK();
     }
+  }
+
+  Status Reset() override {
+#if defined(LZ4_VERSION_NUMBER) && LZ4_VERSION_NUMBER >= 10800
+    // LZ4F_resetDecompressionContext appeared in 1.8.0
+    DCHECK_NE(ctx_, nullptr);
+    LZ4F_resetDecompressionContext(ctx_);
+    finished_ = false;
+    return Status::OK();
+#else
+    if (ctx_ != nullptr) {
+      ARROW_UNUSED(LZ4F_freeDecompressionContext(ctx_));
+    }
+    return Init();
+#endif
   }
 
   Status Decompress(int64_t input_len, const uint8_t* input, int64_t output_len,

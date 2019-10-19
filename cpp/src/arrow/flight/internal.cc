@@ -16,14 +16,15 @@
 // under the License.
 
 #include "arrow/flight/internal.h"
-#include "arrow/flight/protocol-internal.h"
+#include "arrow/flight/platform.h"
+#include "arrow/flight/protocol_internal.h"
 
 #include <cstddef>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 
-#include "arrow/util/config.h"
 #ifdef GRPCPP_PP_INCLUDE
 #include <grpcpp/grpcpp.h>
 #else
@@ -37,37 +38,134 @@
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
 #include "arrow/util/logging.h"
+#include "arrow/util/string_builder.h"
 
 namespace arrow {
 namespace flight {
 namespace internal {
+
+const char* kGrpcAuthHeader = "auth-token-bin";
 
 Status FromGrpcStatus(const grpc::Status& grpc_status) {
   if (grpc_status.ok()) {
     return Status::OK();
   }
 
-  if (grpc_status.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
-    return Status::NotImplemented("gRPC returned unimplemented error, with message: ",
-                                  grpc_status.error_message());
-  } else {
-    return Status::IOError("gRPC failed with error code ", grpc_status.error_code(),
-                           " and message: ", grpc_status.error_message());
+  switch (grpc_status.error_code()) {
+    case grpc::StatusCode::OK:
+      return Status::OK();
+    case grpc::StatusCode::CANCELLED:
+      return Status::IOError("gRPC cancelled call, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(std::make_shared<FlightStatusDetail>(FlightStatusCode::Cancelled));
+    case grpc::StatusCode::UNKNOWN: {
+      std::stringstream ss;
+      ss << "Flight RPC failed with message: " << grpc_status.error_message();
+      return Status::UnknownError(ss.str()).WithDetail(
+          std::make_shared<FlightStatusDetail>(FlightStatusCode::Failed));
+    }
+    case grpc::StatusCode::INVALID_ARGUMENT:
+      return Status::Invalid("gRPC returned invalid argument error, with message: ",
+                             grpc_status.error_message());
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+      return Status::IOError("gRPC returned deadline exceeded error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(std::make_shared<FlightStatusDetail>(FlightStatusCode::TimedOut));
+    case grpc::StatusCode::NOT_FOUND:
+      return Status::KeyError("gRPC returned not found error, with message: ",
+                              grpc_status.error_message());
+    case grpc::StatusCode::ALREADY_EXISTS:
+      return Status::AlreadyExists("gRPC returned already exists error, with message: ",
+                                   grpc_status.error_message());
+    case grpc::StatusCode::PERMISSION_DENIED:
+      return Status::IOError("gRPC returned permission denied error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(
+              std::make_shared<FlightStatusDetail>(FlightStatusCode::Unauthorized));
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return Status::Invalid("gRPC returned resource exhausted error, with message: ",
+                             grpc_status.error_message());
+    case grpc::StatusCode::FAILED_PRECONDITION:
+      return Status::Invalid("gRPC returned precondition failed error, with message: ",
+                             grpc_status.error_message());
+    case grpc::StatusCode::ABORTED:
+      return Status::IOError("gRPC returned aborted error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(std::make_shared<FlightStatusDetail>(FlightStatusCode::Internal));
+    case grpc::StatusCode::OUT_OF_RANGE:
+      return Status::Invalid("gRPC returned out-of-range error, with message: ",
+                             grpc_status.error_message());
+    case grpc::StatusCode::UNIMPLEMENTED:
+      return Status::NotImplemented("gRPC returned unimplemented error, with message: ",
+                                    grpc_status.error_message());
+    case grpc::StatusCode::INTERNAL:
+      return Status::IOError("gRPC returned internal error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(std::make_shared<FlightStatusDetail>(FlightStatusCode::Internal));
+    case grpc::StatusCode::UNAVAILABLE:
+      return Status::IOError("gRPC returned unavailable error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(
+              std::make_shared<FlightStatusDetail>(FlightStatusCode::Unavailable));
+    case grpc::StatusCode::DATA_LOSS:
+      return Status::IOError("gRPC returned data loss error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(std::make_shared<FlightStatusDetail>(FlightStatusCode::Internal));
+    case grpc::StatusCode::UNAUTHENTICATED:
+      return Status::IOError("gRPC returned unauthenticated error, with message: ",
+                             grpc_status.error_message())
+          .WithDetail(
+              std::make_shared<FlightStatusDetail>(FlightStatusCode::Unauthenticated));
+    default:
+      return Status::UnknownError("gRPC failed with error code ",
+                                  grpc_status.error_code(),
+                                  " and message: ", grpc_status.error_message());
   }
 }
 
 grpc::Status ToGrpcStatus(const Status& arrow_status) {
   if (arrow_status.ok()) {
     return grpc::Status::OK;
-  } else {
-    grpc::StatusCode grpc_code = grpc::StatusCode::UNKNOWN;
-    if (arrow_status.IsNotImplemented()) {
-      grpc_code = grpc::StatusCode::UNIMPLEMENTED;
-    } else if (arrow_status.IsInvalid()) {
-      grpc_code = grpc::StatusCode::INVALID_ARGUMENT;
-    }
-    return grpc::Status(grpc_code, arrow_status.message());
   }
+
+  grpc::StatusCode grpc_code = grpc::StatusCode::UNKNOWN;
+  std::string message = arrow_status.message();
+  if (arrow_status.detail()) {
+    message += ". Detail: ";
+    message += arrow_status.detail()->ToString();
+  }
+
+  std::shared_ptr<FlightStatusDetail> flight_status =
+      FlightStatusDetail::UnwrapStatus(arrow_status);
+  if (flight_status) {
+    switch (flight_status->code()) {
+      case FlightStatusCode::Internal:
+        grpc_code = grpc::StatusCode::INTERNAL;
+        break;
+      case FlightStatusCode::TimedOut:
+        grpc_code = grpc::StatusCode::DEADLINE_EXCEEDED;
+        break;
+      case FlightStatusCode::Cancelled:
+        grpc_code = grpc::StatusCode::CANCELLED;
+        break;
+      case FlightStatusCode::Unauthenticated:
+        grpc_code = grpc::StatusCode::UNAUTHENTICATED;
+        break;
+      case FlightStatusCode::Unauthorized:
+        grpc_code = grpc::StatusCode::PERMISSION_DENIED;
+        break;
+      case FlightStatusCode::Unavailable:
+        grpc_code = grpc::StatusCode::UNAVAILABLE;
+        break;
+      default:
+        break;
+    }
+  } else if (arrow_status.IsNotImplemented()) {
+    grpc_code = grpc::StatusCode::UNIMPLEMENTED;
+  } else if (arrow_status.IsInvalid()) {
+    grpc_code = grpc::StatusCode::INVALID_ARGUMENT;
+  }
+  return grpc::Status(grpc_code, message);
 }
 
 // ActionType
@@ -93,7 +191,9 @@ Status FromProto(const pb::Action& pb_action, Action* action) {
 
 Status ToProto(const Action& action, pb::Action* pb_action) {
   pb_action->set_type(action.type);
-  pb_action->set_body(action.body->ToString());
+  if (action.body) {
+    pb_action->set_body(action.body->ToString());
+  }
   return Status::OK();
 }
 
@@ -119,14 +219,17 @@ Status FromProto(const pb::Criteria& pb_criteria, Criteria* criteria) {
 // Location
 
 Status FromProto(const pb::Location& pb_location, Location* location) {
-  location->host = pb_location.host();
-  location->port = pb_location.port();
-  return Status::OK();
+  return Location::Parse(pb_location.uri(), location);
 }
 
 void ToProto(const Location& location, pb::Location* pb_location) {
-  pb_location->set_host(location.host);
-  pb_location->set_port(location.port);
+  pb_location->set_uri(location.ToString());
+}
+
+Status ToProto(const BasicAuth& basic_auth, pb::BasicAuth* pb_basic_auth) {
+  pb_basic_auth->set_username(basic_auth.username);
+  pb_basic_auth->set_password(basic_auth.password);
+  return Status::OK();
 }
 
 // Ticket
@@ -206,9 +309,9 @@ Status ToProto(const FlightDescriptor& descriptor, pb::FlightDescriptor* pb_desc
   return Status::OK();
 }
 
-// FlightGetInfo
+// FlightInfo
 
-Status FromProto(const pb::FlightGetInfo& pb_info, FlightInfo::Data* info) {
+Status FromProto(const pb::FlightInfo& pb_info, FlightInfo::Data* info) {
   RETURN_NOT_OK(FromProto(pb_info.flight_descriptor(), &info->descriptor));
 
   info->schema = pb_info.schema();
@@ -223,16 +326,30 @@ Status FromProto(const pb::FlightGetInfo& pb_info, FlightInfo::Data* info) {
   return Status::OK();
 }
 
+Status FromProto(const pb::BasicAuth& pb_basic_auth, BasicAuth* basic_auth) {
+  basic_auth->password = pb_basic_auth.password();
+  basic_auth->username = pb_basic_auth.username();
+
+  return Status::OK();
+}
+
+Status FromProto(const pb::SchemaResult& pb_result, std::string* result) {
+  *result = pb_result.schema();
+  return Status::OK();
+}
+
 Status SchemaToString(const Schema& schema, std::string* out) {
   // TODO(wesm): Do we care about better memory efficiency here?
   std::shared_ptr<Buffer> serialized_schema;
-  RETURN_NOT_OK(ipc::SerializeSchema(schema, default_memory_pool(), &serialized_schema));
+  ipc::DictionaryMemo unused_dict_memo;
+  RETURN_NOT_OK(ipc::SerializeSchema(schema, &unused_dict_memo, default_memory_pool(),
+                                     &serialized_schema));
   *out = std::string(reinterpret_cast<const char*>(serialized_schema->data()),
                      static_cast<size_t>(serialized_schema->size()));
   return Status::OK();
 }
 
-Status ToProto(const FlightInfo& info, pb::FlightGetInfo* pb_info) {
+Status ToProto(const FlightInfo& info, pb::FlightInfo* pb_info) {
   // clear any repeated fields
   pb_info->clear_endpoint();
 
@@ -248,6 +365,11 @@ Status ToProto(const FlightInfo& info, pb::FlightGetInfo* pb_info) {
 
   pb_info->set_total_records(info.total_records());
   pb_info->set_total_bytes(info.total_bytes());
+  return Status::OK();
+}
+
+Status ToProto(const SchemaResult& result, pb::SchemaResult* pb_result) {
+  pb_result->set_schema(result.serialized_schema());
   return Status::OK();
 }
 

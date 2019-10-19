@@ -43,8 +43,10 @@ files into Arrow structures.
    pandas
    timestamps
    csv
+   json
    parquet
    cuda
+   extending_types
    extending
    api
    getting_involved

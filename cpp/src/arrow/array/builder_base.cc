@@ -21,7 +21,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -30,8 +29,8 @@
 #include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/bit-util.h"
-#include "arrow/util/int-util.h"
+#include "arrow/util/bit_util.h"
+#include "arrow/util/int_util.h"
 #include "arrow/util/logging.h"
 
 namespace arrow {
@@ -60,6 +59,12 @@ Status ArrayBuilder::AppendToBitmap(bool is_valid) {
 Status ArrayBuilder::AppendToBitmap(const uint8_t* valid_bytes, int64_t length) {
   RETURN_NOT_OK(Reserve(length));
   UnsafeAppendToBitmap(valid_bytes, length);
+  return Status::OK();
+}
+
+Status ArrayBuilder::AppendToBitmap(int64_t num_bits, bool value) {
+  RETURN_NOT_OK(Reserve(num_bits));
+  UnsafeAppendToBitmap(num_bits, value);
   return Status::OK();
 }
 

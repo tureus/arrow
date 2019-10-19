@@ -32,6 +32,11 @@ x-ubuntu-volumes:
   - .:/arrow:delegated
   - ubuntu-cache:/build:delegated
 
+x-ubuntu-trusty-volumes:
+  &ubuntu-trusty-volumes
+  - .:/arrow:delegated
+  - ubuntu-trusty-cache:/build:delegated
+
 x-ubuntu-xenial-volumes:
   &ubuntu-xenial-volumes
   - .:/arrow:delegated
@@ -59,6 +64,7 @@ x-debian-testing-volumes:
 
 volumes:
   ubuntu-cache:
+  ubuntu-trusty-cache:
   ubuntu-xenial-cache:
   ubuntu-bionic-cache:
   alpine-cache:
@@ -81,7 +87,7 @@ services:
     # Usage:
     #   docker-compose build build-context
     #   docker-compose run build-context
-    image: arrow:build-context
+    image: arrowdev/arrow-build-context:latest
     build:
       context: .
       dockerfile: dev/Dockerfile.context
@@ -93,7 +99,7 @@ services:
     #   docker-compose build cpp
     #   docker-compose build c_glib
     #   docker-compose run c_glib
-    image: arrow:c_glib
+    image: arrowdev/arrow-c_glib:latest
     build:
       context: .
       dockerfile: c_glib/Dockerfile
@@ -103,12 +109,46 @@ services:
     # Usage:
     #   docker-compose build cpp
     #   docker-compose run cpp
-    image: arrow:cpp
+    image: arrowdev/arrow-cpp:latest
+    shm_size: 2G
+    build:
+      context: .
+      dockerfile: cpp/Dockerfile
+    volumes: *ubuntu-volumes
+
+  cpp-system-deps:
+    # Usage:
+    #   docker-compose build cpp-system-deps
+    #   docker-compose run cpp-system-deps
+    image: arrowdev/arrow-cpp-system-deps:latest
+    shm_size: 2G
+    cap_add:
+      # LeakSanitizer and gdb requires ptrace(2)
+      - SYS_PTRACE
+    build:
+      context: .
+      dockerfile: cpp/Dockerfile.ubuntu-bionic
+      args:
+        LLVM_VERSION: 7
+    environment:
+      ARROW_USE_ASAN: "ON"
+      ARROW_USE_UBSAN: "ON"
+    volumes:
+      - .:/arrow:delegated
+      - ubuntu-cache:/build:delegated
+      - ${HOME}/.ccache:/build/ccache:cached
+
+  cpp-release:
+    # Usage:
+    #   docker-compose build cpp
+    #   docker-compose run cpp-release
+    image: arrowdev/arrow-cpp-release:latest
     shm_size: 2G
     build:
       context: .
       dockerfile: cpp/Dockerfile
     environment:
+      ARROW_BUILD_TYPE: release
       PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
     volumes: *ubuntu-volumes
 
@@ -116,7 +156,7 @@ services:
     # Usage:
     #   docker-compose build cpp
     #   docker-compose run cpp-static-only
-    image: arrow:cpp
+    image: arrowdev/arrow-cpp:latest
     shm_size: 2G
     environment:
       ARROW_BUILD_SHARED: "OFF"
@@ -128,7 +168,7 @@ services:
     # Usage:
     #   docker-compose build cpp
     #   docker-compose run cpp-static-only
-    image: arrow:cpp
+    image: arrowdev/arrow-cpp:latest
     shm_size: 2G
     environment:
       ARROW_BUILD_STATIC: "OFF"
@@ -139,15 +179,19 @@ services:
     # Usage:
     #   docker-compose build cpp-cmake32
     #   docker-compose run cpp-cmake32
-    image: arrow:cpp-cmake32
+    image: arrowdev/arrow-cpp-cmake32:latest
     shm_size: 2G
     build:
       context: .
-      dockerfile: cpp/Dockerfile
+      dockerfile: cpp/Dockerfile.cmake
       args:
-        EXTRA_CONDA_PKGS: cmake=3.2
+        CMAKE_VERSION: 3.2.3
     environment:
+      # Vendor boost to avoid dealing with stale FindBoost.
+      ARROW_BOOST_SOURCE: "BUNDLED"
       ARROW_ORC: "OFF"
+      # uriparser requires cmake 3.3
+      ARROW_FLIGHT: "OFF"
       PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
     volumes: *ubuntu-volumes
 
@@ -155,7 +199,7 @@ services:
     # Usage:
     #   docker-compose build cpp-alpine
     #   docker-compose run cpp-alpine
-    image: arrow:cpp-alpine
+    image: arrowdev/arrow-cpp-alpine:latest
     shm_size: 2G
     build:
       context: .
@@ -168,7 +212,7 @@ services:
     # Usage:
     #   docker-compose build cpp-fedora
     #   docker-compose run cpp-fedora
-    image: arrow:cpp-fedora
+    image: arrowdev/arrow-cpp-fedora:latest
     shm_size: 2G
     build:
       context: .
@@ -181,7 +225,7 @@ services:
     # Usage:
     #   docker-compose build cpp-debian-testing
     #   docker-compose run cpp-debian-testing
-    image: arrow:cpp-debian-testing
+    image: arrowdev/arrow-cpp-debian-testing:latest
     shm_size: 2G
     build:
       context: .
@@ -190,11 +234,24 @@ services:
       PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
     volumes: *debian-testing-volumes
 
+  cpp-ubuntu-trusty:
+    # Usage:
+    #   docker-compose build cpp-ubuntu-trusty
+    #   docker-compose run cpp-ubuntu-trusty
+    image: arrowdev/arrow-cpp-ubuntu-trusty:latest
+    shm_size: 2G
+    build:
+      context: .
+      dockerfile: cpp/Dockerfile.ubuntu-trusty
+    environment:
+      PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
+    volumes: *ubuntu-trusty-volumes
+
   cpp-ubuntu-xenial:
     # Usage:
     #   docker-compose build cpp-ubuntu-xenial
     #   docker-compose run cpp-ubuntu-xenial
-    image: arrow:cpp-ubuntu-xenial
+    image: arrowdev/arrow-cpp-ubuntu-xenial:latest
     shm_size: 2G
     build:
       context: .
@@ -203,11 +260,28 @@ services:
       PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
     volumes: *ubuntu-xenial-volumes
 
+  cpp-minimum-boost-version:
+    # Ubuntu Xenial 16.04 has Boost 1.58, our minimum version
+    #
+    # Usage:
+    #   docker-compose build cpp-minimum-boost-version
+    #   docker-compose run cpp-minimum-boost-version
+    image: arrowdev/arrow-cpp-ubuntu-xenial:latest
+    shm_size: 2G
+    build:
+      context: .
+      dockerfile: cpp/Dockerfile.ubuntu-xenial
+    environment:
+      PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
+      ARROW_BOOST_SOURCE: "SYSTEM"
+      ARROW_FLIGHT: "OFF"
+    volumes: *ubuntu-xenial-volumes
+
   cpp-ubuntu-bionic:
     # Usage:
     #   docker-compose build cpp-ubuntu-bionic
     #   docker-compose run cpp-ubuntu-bionic
-    image: arrow:cpp-ubuntu-bionic
+    image: arrowdev/arrow-cpp-ubuntu-bionic:latest
     shm_size: 2G
     build:
       context: .
@@ -220,17 +294,26 @@ services:
     # Usage:
     #   docker-compose build go
     #   docker-compose run go
-    image: arrow:go
+    image: arrowdev/arrow-go:latest
     build:
       context: .
       dockerfile: go/Dockerfile
     volumes: *ubuntu-volumes
 
+  integration:
+    image: arrowdev/arrow-integration:latest
+    build:
+      context: .
+      dockerfile: integration/Dockerfile
+    volumes:
+      - .:/arrow:ro  # ensures that docker won't contaminate the host directory
+      - maven-cache:/root/.m2:delegated
+
   java:
     # Usage:
     #   docker-compose build java
     #   docker-compose run java
-    image: arrow:java
+    image: arrowdev/arrow-java:latest
     build:
       context: .
       dockerfile: java/Dockerfile
@@ -238,8 +321,20 @@ services:
       - .:/arrow:ro  # ensures that docker won't contaminate the host directory
       - maven-cache:/root/.m2:delegated
 
+  java-all-jdks:
+    # Usage:
+    #   docker-compose build java-all-jdks
+    #   docker-compose run java-all-jdks
+    image: arrowdev/arrow-java-all-jdks:latest
+    build:
+      context: .
+      dockerfile: java/Dockerfile.all-jdks
+    volumes:
+      - .:/arrow:ro  # ensures that docker won't contaminate the host directory
+      - maven-cache:/root/.m2:delegated
+
   js:
-    image: arrow:js
+    image: arrowdev/arrow-js:latest
     build:
       context: .
       dockerfile: js/Dockerfile
@@ -250,7 +345,7 @@ services:
     #   docker-compose build cpp
     #   docker-compose build python
     #   docker-compose run python
-    image: arrow:python-${PYTHON_VERSION:-3.6}
+    image: arrowdev/arrow-python-${PYTHON_VERSION:-3.6}:latest
     shm_size: 2G
     build:
       context: .
@@ -265,7 +360,7 @@ services:
     #   docker-compose build cpp-alpine
     #   docker-compose build python-alpine
     #   docker-compose run python-alpine
-    image: arrow:python-${PYTHON_VERSION:-3.6}-alpine
+    image: arrowdev/arrow-python-${PYTHON_VERSION:-3.6}-alpine:latest
     shm_size: 2G
     build:
       context: .
@@ -281,7 +376,7 @@ services:
     #   docker-compose build python
     #   docker-compose build python-nopandas
     #   docker-compose run python-nopandas
-    image: arrow:python-${PYTHON_VERSION:-3.6}-nopandas
+    image: arrowdev/arrow-python-${PYTHON_VERSION:-3.6}-nopandas:latest
     shm_size: 2G
     build:
       context: .
@@ -294,12 +389,10 @@ services:
     # Usage:
     #   docker-compose build rust
     #   docker-compose run rust
-    image: arrow:rust
+    image: arrowdev/arrow-rust:latest
     build:
       context: .
       dockerfile: rust/Dockerfile
-    environment:
-      PARQUET_TEST_DATA: /arrow/cpp/submodules/parquet-testing/data
     volumes: *ubuntu-volumes
 
   r:
@@ -307,10 +400,38 @@ services:
     #   docker-compose build cpp
     #   docker-compose build r
     #   docker-compose run r
-    image: arrow:r
+    image: arrowdev/arrow-r:latest
     build:
       context: .
       dockerfile: r/Dockerfile
+    volumes: *ubuntu-volumes
+
+  r-sanitizer:
+    # Usage:
+    #   docker-compose build r-sanitizer
+    #   docker-compose run r-sanitizer
+    image: arrowdev/arrow-r-sanitizer:latest
+    cap_add:
+      # LeakSanitizer and gdb requires ptrace(2)
+      - SYS_PTRACE
+    build:
+      context: .
+      dockerfile: r/Dockerfile.sanitizer
+    volumes: *ubuntu-volumes
+
+  r-conda:
+    # Usage:
+    #   export R_VERSION=3.5.1
+    #   docker-compose build cpp
+    #   docker-compose build r-conda
+    #   docker-compose run r-conda
+    image: arrowdev/arrow-r-conda-${R_VERSION:-3.5.1}:latest
+    shm_size: 2G
+    build:
+      context: .
+      dockerfile: r/Dockerfile.conda
+      args:
+        R_VERSION: ${R_VERSION:-3.5.1}
     volumes: *ubuntu-volumes
 
   ######################### Tools and Linters #################################
@@ -320,16 +441,12 @@ services:
 
   lint:
     # Usage:
-    #   export PYTHON_VERSION=3.6
-    #   docker-compose build cpp
-    #   docker-compose build python
     #   docker-compose build lint
     #   docker-compose run lint
-    image: arrow:lint
+    image: arrowdev/arrow-lint:latest
     build:
       context: .
-      dockerfile: dev/lint/Dockerfile
-    command: arrow/dev/lint/run_linters.sh
+      dockerfile: ci/docker/Dockerfile.lint
     volumes: *ubuntu-volumes
 
   iwyu:
@@ -337,20 +454,63 @@ services:
     #   export PYTHON_VERSION=3.6
     #   docker-compose build cpp
     #   docker-compose build python
-    #   docker-compose build lint
+    #   docker-compose build iwyu
     #   docker-compose run iwyu
-    image: arrow:lint
+    image: arrowdev/arrow-iwyu:latest
+    build:
+      context: .
+      dockerfile: dev/lint/Dockerfile
     command: arrow/dev/lint/run_iwyu.sh
     volumes: *ubuntu-volumes
 
-  clang-format:
+  fuzzit:
+    # Submit a fuzzing job on fuzzit.dev
     # Usage:
     #   docker-compose build cpp
-    #   docker-compose build python
-    #   docker-compose build lint
-    #   docker-compose run clang-format
-    image: arrow:lint
-    command: arrow/dev/lint/run_clang_format.sh
+    #   docker-compose build fuzzit
+    #   docker-compose run fuzzit
+    image: arrowdev/arrow-fuzzit:latest
+    build:
+      context: .
+      dockerfile: dev/fuzzit/Dockerfile
+    environment:
+      CI_ARROW_SHA: ${CI_ARROW_SHA}
+      CI_ARROW_BRANCH: ${CI_ARROW_BRANCH}
+      FUZZIT_JOB_TYPE: fuzzing
+      FUZZIT_API_KEY: c0b760d37db6012fcaafd8ca5f412ba7bcd297ac969650502994b51aa11798153824442f999a067e1ef67821989ed664
+    volumes: *ubuntu-volumes
+
+  fuzzit-regression:
+    # Submit a regression job on fuzzit.dev
+    # Usage:
+    #   docker-compose build cpp
+    #   docker-compose build fuzzit-regression
+    #   docker-compose run fuzzit-regression
+    image: arrow:fuzzit
+    build:
+      context: .
+      dockerfile: dev/fuzzit/Dockerfile
+    environment:
+      CI_ARROW_SHA: ${CI_ARROW_SHA}
+      CI_ARROW_BRANCH: ${CI_ARROW_BRANCH}
+      FUZZIT_JOB_TYPE: regression
+      FUZZIT_API_KEY: c0b760d37db6012fcaafd8ca5f412ba7bcd297ac969650502994b51aa11798153824442f999a067e1ef67821989ed664
+    volumes: *ubuntu-volumes
+
+  fuzzit-local-regression:
+    # Run a local fuzzit regression job
+    # Usage:
+    #   docker-compose build cpp
+    #   docker-compose build fuzzit-local-regression
+    #   docker-compose run fuzzit-local-regression
+    image: arrow:fuzzit
+    build:
+      context: .
+      dockerfile: dev/fuzzit/Dockerfile
+    environment:
+      CI_ARROW_SHA: ${CI_ARROW_SHA}
+      CI_ARROW_BRANCH: ${CI_ARROW_BRANCH}
+      FUZZIT_JOB_TYPE: local-regression
     volumes: *ubuntu-volumes
 
   docs:
@@ -359,7 +519,7 @@ services:
     #   docker-compose build python
     #   docker-compose build docs
     #   docker-compose run docs
-    image: arrow:docs
+    image: arrowdev/arrow-docs:latest
     build:
       context: .
       dockerfile: docs/Dockerfile
@@ -375,7 +535,7 @@ services:
     #     $ docker-compose pull python-manylinux1
     #   an then run:
     #     $ docker-compose run -e PYTHON_VERSION=3.7 python-manylinux1
-    image: quay.io/xhochy/arrow_manylinux1_x86_64_base:latest
+    image: arrowdev/arrow_manylinux1_x86_64_base:0.14.1-static-zlib
     build:
       context: python/manylinux1
       dockerfile: Dockerfile-x86_64_base
@@ -387,6 +547,28 @@ services:
     volumes:
       - .:/arrow:delegated
       - ./python/manylinux1:/io:delegated
+    command: /io/build_arrow.sh
+
+  python-manylinux2010:
+    # Usage:
+    #   either build:
+    #     $ docker-compose build python-manylinux2010
+    #   or pull:
+    #     $ docker-compose pull python-manylinux2010
+    #   an then run:
+    #     $ docker-compose run -e PYTHON_VERSION=3.7 python-manylinux2010
+    image: arrowdev/arrow_manylinux2010_x86_64_base:0.14.1-static-zlib
+    build:
+      context: python/manylinux2010
+      dockerfile: Dockerfile-x86_64_base
+    shm_size: 2G
+    environment:
+      PYARROW_PARALLEL: 3
+      PYTHON_VERSION: ${PYTHON_VERSION:-3.6}
+      UNICODE_WIDTH: ${UNICODE_WIDTH:-16}
+    volumes:
+      - .:/arrow:delegated
+      - ./python/manylinux2010:/io:delegated
     command: /io/build_arrow.sh
 
   ######################### Integration Tests #################################
@@ -404,7 +586,7 @@ services:
     #   docker-compose build python
     #   docker-compose build --no-cache pandas-master
     #   docker-compose run pandas-master
-    image: arrow:pandas-master
+    image: arrowdev/arrow-pandas-master:latest
     build:
       context: .
       dockerfile: integration/pandas/Dockerfile
@@ -447,7 +629,7 @@ services:
     #   docker-compose build python
     #   docker-compose build hdfs-integration
     #   docker-compose run hdfs-integration
-    image: arrow:hdfs-${HDFS_VERSION:-2.6.5}
+    image: arrowdev/arrow-hdfs-${HDFS_VERSION:-2.9.2}:latest
     links:
       - hdfs-namenode:hdfs-namenode
       - hdfs-datanode-1:hdfs-datanode-1
@@ -460,7 +642,7 @@ services:
       context: .
       dockerfile: integration/hdfs/Dockerfile
       args:
-        HDFS_VERSION: ${HDFS_VERSION:-2.6.5}
+        HDFS_VERSION: ${HDFS_VERSION:-2.9.2}
     volumes: *ubuntu-volumes
 
   # TODO(kszucs): pass dask version explicitly as a build argument
@@ -471,10 +653,23 @@ services:
     #   docker-compose build python
     #   docker-compose build dask-integration
     #   docker-compose run dask-integration
-    image: arrow:dask-integration
+    image: arrowdev/arrow-dask-integration:latest
     build:
       context: .
       dockerfile: integration/dask/Dockerfile
+    volumes: *ubuntu-volumes
+
+  turbodbc-integration:
+    # Usage:
+    #   export PYTHON_VERSION=3.6
+    #   docker-compose build cpp
+    #   docker-compose build python
+    #   docker-compose build turbodbc-integration
+    #   docker-compose run turbodbc-integration
+    image: arrowdev/arrow-turbodbc-integration:latest
+    build:
+      context: .
+      dockerfile: integration/turbodbc/Dockerfile
     volumes: *ubuntu-volumes
 
   spark-integration:
@@ -484,7 +679,7 @@ services:
     #   docker-compose build python
     #   docker-compose build spark-integration
     #   docker-compose run spark-integration
-    image: arrow:spark-${SPARK_VERSION:-master}
+    image: arrowdev/arrow-spark-${SPARK_VERSION:-master}:latest
     environment:
       - SPARK_VERSION=${SPARK_VERSION:-master}
     build:
@@ -498,10 +693,25 @@ services:
 
   # TODO(kszucs): hive-integration
 
+  ################################# Release ###################################
+
+  release-source:
+    image: arrowdev/arrow-release-source:latest
+    build:
+      context: .
+      dockerfile: dev/release/source/Dockerfile
+    volumes:
+      - .:/arrow:delegated
+
   ######################## Verification Containers ############################
 
   debian-stretch:
     image: debian:stretch
+    volumes:
+      - .:/arrow:delegated
+
+  debian-buster:
+    image: debian:buster
     volumes:
       - .:/arrow:delegated
 
@@ -520,8 +730,8 @@ services:
     volumes:
       - .:/arrow:delegated
 
-  ubuntu-cosmic:
-    image: ubuntu:cosmic
+  ubuntu-disco:
+    image: ubuntu:disco
     volumes:
       - .:/arrow:delegated
 

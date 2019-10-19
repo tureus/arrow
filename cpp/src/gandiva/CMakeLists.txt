@@ -69,11 +69,13 @@ set(SRC_FILES
     llvm_generator.cc
     llvm_types.cc
     like_holder.cc
+    literal_holder.cc
     projector.cc
     regex_util.cc
     selection_vector.cc
     tree_expr_builder.cc
     to_date_holder.cc
+    random_generator_holder.cc
     ${GANDIVA_PRECOMPILED_CC_PATH})
 
 set(GANDIVA_SHARED_PRIVATE_LINK_LIBS arrow_shared LLVM::LLVM_INTERFACE RE2::re2)
@@ -83,7 +85,7 @@ set(GANDIVA_STATIC_LINK_LIBS arrow_static LLVM::LLVM_INTERFACE RE2::re2)
 if(ARROW_GANDIVA_STATIC_LIBSTDCPP
    AND (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX))
   set(GANDIVA_STATIC_LINK_LIBS ${GANDIVA_STATIC_LINK_LIBS} -static-libstdc++
-      -static-libgcc)
+                               -static-libgcc)
 endif()
 
 # if (MSVC)
@@ -94,6 +96,15 @@ endif()
 #     set(GANDIVA_SHARED_LINK_FLAGS "${GANDIVA_SHARED_LINK_FLAGS} /EXPORT:${SYMBOL}")
 #   endforeach()
 # endif()
+if(NOT APPLE AND NOT MSVC)
+  # Localize thirdparty symbols using a linker version script. This hides them
+  # from the client application. The OS X linker does not support the
+  # version-script option.
+  set(GANDIVA_VERSION_SCRIPT_FLAGS
+      "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/symbols.map")
+  set(GANDIVA_SHARED_LINK_FLAGS
+      "${GANDIVA_SHARED_LINK_FLAGS} ${GANDIVA_VERSION_SCRIPT_FLAGS}")
+endif()
 
 add_arrow_lib(gandiva
               SOURCES
@@ -157,45 +168,48 @@ function(ADD_GANDIVA_TEST REL_TEST_NAME)
       "gandiva"
       LABELS
       "gandiva-tests"
+      EXTRA_LINK_LIBS
+      LLVM::LLVM_INTERFACE
+      EXTRA_DEPENDENCIES
+      LLVM::LLVM_INTERFACE
       ${ARG_UNPARSED_ARGUMENTS})
 
   # and uses less disk space, but in some cases we need to force static
   # linking (see rationale below).
-  if(ARG_USE_STATIC_LINKING)
-    add_test_case(${REL_TEST_NAME} ${TEST_ARGUMENTS} STATIC_LINK_LIBS
-                  ${GANDIVA_STATIC_TEST_LINK_LIBS})
+  if(ARG_USE_STATIC_LINKING OR ARROW_TEST_LINKAGE STREQUAL "static")
+    add_test_case(${REL_TEST_NAME}
+                  ${TEST_ARGUMENTS}
+                  STATIC_LINK_LIBS
+                  ${GANDIVA_STATIC_TEST_LINK_LIBS}
+                  ${ARG_UNPARSED_ARGUMENTS})
   else()
-    add_test_case(${REL_TEST_NAME} ${TEST_ARGUMENTS} STATIC_LINK_LIBS
-                  ${GANDIVA_SHARED_TEST_LINK_LIBS})
-  endif()
-
-  set(TARGET_NAME gandiva-${REL_TEST_NAME})
-
-  if((TARGET ${TARGET_NAME})
-     AND (${REL_TEST_NAME} MATCHES "llvm"
-          OR ${REL_TEST_NAME} MATCHES "expression_registry"))
-    # If the unit test has llvm in its name, include llvm.
-    add_dependencies(${TARGET_NAME} LLVM::LLVM_INTERFACE)
-    target_link_libraries(${TARGET_NAME} PRIVATE LLVM::LLVM_INTERFACE)
+    add_test_case(${REL_TEST_NAME}
+                  ${TEST_ARGUMENTS}
+                  STATIC_LINK_LIBS
+                  ${GANDIVA_SHARED_TEST_LINK_LIBS}
+                  ${ARG_UNPARSED_ARGUMENTS})
   endif()
 endfunction()
 
-add_gandiva_test(bitmap_accumulator_test)
-add_gandiva_test(engine_llvm_test)
-add_gandiva_test(function_signature_test)
-add_gandiva_test(function_registry_test)
-add_gandiva_test(llvm_types_test)
-add_gandiva_test(llvm_generator_test)
-add_gandiva_test(annotator_test)
-add_gandiva_test(tree_expr_test)
-add_gandiva_test(expr_decomposer_test)
-add_gandiva_test(expression_registry_test)
-add_gandiva_test(selection_vector_test)
-add_gandiva_test(lru_cache_test)
-add_gandiva_test(to_date_holder_test)
-add_gandiva_test(simple_arena_test)
-add_gandiva_test(like_holder_test)
-add_gandiva_test(decimal_type_util_test)
+add_gandiva_test(internals-test
+                 SOURCES
+                 bitmap_accumulator_test.cc
+                 engine_llvm_test.cc
+                 function_signature_test.cc
+                 function_registry_test.cc
+                 llvm_types_test.cc
+                 llvm_generator_test.cc
+                 annotator_test.cc
+                 tree_expr_test.cc
+                 expr_decomposer_test.cc
+                 expression_registry_test.cc
+                 selection_vector_test.cc
+                 lru_cache_test.cc
+                 to_date_holder_test.cc
+                 simple_arena_test.cc
+                 like_holder_test.cc
+                 decimal_type_util_test.cc
+                 random_generator_holder_test.cc)
 
 if(ARROW_GANDIVA_JAVA)
   add_subdirectory(jni)

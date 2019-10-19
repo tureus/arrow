@@ -17,6 +17,8 @@
 
 # flake8: noqa
 
+from __future__ import absolute_import
+
 import itertools
 
 import numpy as np
@@ -45,6 +47,8 @@ if PY2:
     except ImportError:
         from decimal import Decimal
 
+    from collections import Iterable, Mapping, Sequence
+
     unicode_type = unicode
     file_type = file
     lzip = zip
@@ -70,6 +74,9 @@ if PY2:
         else:
             return o
 
+    def u_utf8(s):
+        return s.decode('utf-8')
+
     def frombytes(o):
         return o
 
@@ -80,6 +87,8 @@ else:
         import pickle5 as builtin_pickle
     except ImportError:
         import pickle as builtin_pickle
+
+    from collections.abc import Iterable, Mapping, Sequence
 
     unicode_type = str
     file_type = None
@@ -106,11 +115,25 @@ else:
         else:
             return o
 
+    def u_utf8(s):
+        if isinstance(s, bytes):
+            return frombytes(s)
+        return s
+
     def frombytes(o):
         return o.decode('utf8')
 
     def unichar(s):
         return chr(s)
+
+
+if sys.version_info >= (3, 7):
+    # Starting with Python 3.7, dicts are guaranteed to be insertion-ordered.
+    ordered_dict = dict
+else:
+    import collections
+    ordered_dict = collections.OrderedDict
+
 
 try:
     import cloudpickle as pickle
@@ -141,5 +164,50 @@ def get_socket_from_fd(fileno, family, type):
     else:
         return socket.socket(fileno=fileno, family=family, type=type)
 
+
+try:
+    # This function is available after numpy-0.16.0.
+    # See also: https://github.com/numpy/numpy/blob/master/numpy/lib/format.py
+    from numpy.lib.format import descr_to_dtype
+except ImportError:
+    def descr_to_dtype(descr):
+        '''
+        descr may be stored as dtype.descr, which is a list of
+        (name, format, [shape]) tuples where format may be a str or a tuple.
+        Offsets are not explicitly saved, rather empty fields with
+        name, format == '', '|Vn' are added as padding.
+        This function reverses the process, eliminating the empty padding fields.
+        '''
+        if isinstance(descr, str):
+            # No padding removal needed
+            return np.dtype(descr)
+        elif isinstance(descr, tuple):
+            # subtype, will always have a shape descr[1]
+            dt = descr_to_dtype(descr[0])
+            return np.dtype((dt, descr[1]))
+        fields = []
+        offset = 0
+        for field in descr:
+            if len(field) == 2:
+                name, descr_str = field
+                dt = descr_to_dtype(descr_str)
+            else:
+                name, descr_str, shape = field
+                dt = np.dtype((descr_to_dtype(descr_str), shape))
+
+            # Ignore padding bytes, which will be void bytes with '' as name
+            # Once support for blank names is removed, only "if name == ''" needed)
+            is_pad = (name == '' and dt.type is np.void and dt.names is None)
+            if not is_pad:
+                fields.append((name, dt, offset))
+
+            offset += dt.itemsize
+
+        names, formats, offsets = zip(*fields)
+        # names may be (title, names) tuples
+        nametups = (n  if isinstance(n, tuple) else (None, n) for n in names)
+        titles, names = zip(*nametups)
+        return np.dtype({'names': names, 'formats': formats, 'titles': titles,
+                            'offsets': offsets, 'itemsize': offset})
 
 __all__ = []

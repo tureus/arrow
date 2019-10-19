@@ -26,9 +26,13 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.util.ByteFunctionHelpers;
+import org.apache.arrow.memory.util.hash.ArrowBufHasher;
+import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.DensityAwareVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.compare.VectorVisitor;
 import org.apache.arrow.vector.complex.impl.SingleStructReaderImpl;
 import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.ComplexHolder;
@@ -42,6 +46,10 @@ import org.apache.arrow.vector.util.TransferPair;
 
 import io.netty.buffer.ArrowBuf;
 
+/**
+ * A struct vector that has no null values (and no validity buffer).
+ * Child Vectors are handled in {@link AbstractStructVector}.
+ */
 public class NonNullableStructVector extends AbstractStructVector {
 
   public static NonNullableStructVector empty(String name, BufferAllocator allocator) {
@@ -53,12 +61,22 @@ public class NonNullableStructVector extends AbstractStructVector {
   protected final FieldType fieldType;
   public int valueCount;
 
-  // deprecated, use FieldType or static constructor instead
+  /**
+   * @deprecated Use FieldType or static constructor instead.
+   */
   @Deprecated
   public NonNullableStructVector(String name, BufferAllocator allocator, CallBack callBack) {
     this(name, allocator, new FieldType(false, ArrowType.Struct.INSTANCE, null, null), callBack);
   }
 
+  /**
+   * Constructs a new instance.
+   *
+   * @param name The name of the instance.
+   * @param allocator The allocator to use to allocating/reallocating buffers.
+   * @param fieldType The type of this list.
+   * @param callBack A schema change callback.
+   */
   public NonNullableStructVector(String name, BufferAllocator allocator, FieldType fieldType, CallBack callBack) {
     super(name, allocator, callBack);
     this.fieldType = checkNotNull(fieldType);
@@ -72,11 +90,22 @@ public class NonNullableStructVector extends AbstractStructVector {
 
   private transient StructTransferPair ephPair;
 
-  public void copyFromSafe(int fromIndex, int thisIndex, NonNullableStructVector from) {
+  /**
+   * Copies the element at fromIndex in the provided vector to thisIndex.  Reallocates buffers
+   * if thisIndex is larger then current capacity.
+   */
+  @Override
+  public void copyFrom(int fromIndex, int thisIndex, ValueVector from) {
+    Preconditions.checkArgument(this.getMinorType() == from.getMinorType());
     if (ephPair == null || ephPair.from != from) {
       ephPair = (StructTransferPair) from.makeTransferPair(this);
     }
     ephPair.copyValueSafe(fromIndex, thisIndex);
+  }
+
+  @Override
+  public void copyFromSafe(int fromIndex, int thisIndex, ValueVector from) {
+    copyFrom(fromIndex, thisIndex, from);
   }
 
   @Override
@@ -168,6 +197,9 @@ public class NonNullableStructVector extends AbstractStructVector {
     return new StructTransferPair(this, new NonNullableStructVector(ref, allocator, fieldType, callBack), false);
   }
 
+  /**
+   * {@link TransferPair} for this this class.
+   */
   protected static class StructTransferPair implements TransferPair {
     private final TransferPair[] pairs;
     private final NonNullableStructVector from;
@@ -266,6 +298,28 @@ public class NonNullableStructVector extends AbstractStructVector {
   }
 
   @Override
+  public int hashCode(int index) {
+    return hashCode(index, null);
+  }
+
+  @Override
+  public int hashCode(int index, ArrowBufHasher hasher) {
+    int hash = 0;
+    for (String child : getChildFieldNames()) {
+      ValueVector v = getChild(child);
+      if (v != null && index < v.getValueCount()) {
+        hash = ByteFunctionHelpers.combineHash(hash, v.hashCode(index, hasher));
+      }
+    }
+    return hash;
+  }
+
+  @Override
+  public <OUT, IN> OUT accept(VectorVisitor<OUT, IN> visitor, IN value) {
+    return visitor.visit(this, value);
+  }
+
+  @Override
   public boolean isNull(int index) {
     return false;
   }
@@ -340,6 +394,7 @@ public class NonNullableStructVector extends AbstractStructVector {
     super.close();
   }
 
+  /** Initializes the struct's members from the given Fields. */
   public void initializeChildrenFromFields(List<Field> children) {
     for (Field field : children) {
       FieldVector vector = (FieldVector) this.add(field.getName(), field.getFieldType());
@@ -350,4 +405,5 @@ public class NonNullableStructVector extends AbstractStructVector {
   public List<FieldVector> getChildrenFromFields() {
     return getChildren();
   }
+
 }

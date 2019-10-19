@@ -17,40 +17,45 @@
 
 package org.apache.arrow.flight;
 
-import java.util.concurrent.Callable;
-
-import org.apache.arrow.flight.impl.Flight.PutResult;
-
+/**
+ * A {@link FlightProducer} that throws on all operations.
+ */
 public class NoOpFlightProducer implements FlightProducer {
 
   @Override
-  public void getStream(Ticket ticket, ServerStreamListener listener) {
-    listener.error(new UnsupportedOperationException("NYI"));
+  public void getStream(CallContext context, Ticket ticket,
+      ServerStreamListener listener) {
+    listener.error(CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException());
   }
 
   @Override
-  public void listFlights(Criteria criteria, StreamListener<FlightInfo> listener) {
-    listener.onError(new UnsupportedOperationException("NYI"));
+  public void listFlights(CallContext context, Criteria criteria,
+      StreamListener<FlightInfo> listener) {
+    listener.onError(CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException());
   }
 
   @Override
-  public FlightInfo getFlightInfo(FlightDescriptor descriptor) {
-    throw new UnsupportedOperationException("NYI");
+  public FlightInfo getFlightInfo(CallContext context,
+      FlightDescriptor descriptor) {
+    throw CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException();
   }
 
   @Override
-  public Callable<PutResult> acceptPut(FlightStream flightStream) {
-    throw new UnsupportedOperationException("NYI");
+  public Runnable acceptPut(CallContext context,
+      FlightStream flightStream, StreamListener<PutResult> ackStream) {
+    throw CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException();
   }
 
   @Override
-  public Result doAction(Action action) {
-    throw new UnsupportedOperationException("NYI");
+  public void doAction(CallContext context, Action action,
+      StreamListener<Result> listener) {
+    listener.onError(CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException());
   }
 
   @Override
-  public void listActions(StreamListener<ActionType> listener) {
-    listener.onError(new UnsupportedOperationException("NYI"));
+  public void listActions(CallContext context,
+      StreamListener<ActionType> listener) {
+    listener.onError(CallStatus.UNIMPLEMENTED.withDescription("Not implemented.").toRuntimeException());
   }
 
 }

@@ -16,16 +16,17 @@
 // under the License.
 
 //! In-memory data source for presenting a Vec<RecordBatch> as a data source that can be
-//! queried by DataFusion. This allows data to be pre-loaded into memory and then repeatedly
-//! queried without incurring additional file I/O overhead.
+//! queried by DataFusion. This allows data to be pre-loaded into memory and then
+//! repeatedly queried without incurring additional file I/O overhead.
 
 use std::sync::{Arc, Mutex};
 
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
 
-use crate::datasource::{RecordBatchIterator, ScanResult, TableProvider};
+use crate::datasource::{ScanResult, TableProvider};
 use crate::error::{ExecutionError, Result};
+use crate::execution::physical_plan::BatchIterator;
 
 /// In-memory table
 pub struct MemTable {
@@ -49,7 +50,7 @@ impl MemTable {
     }
 
     /// Create a mem table by reading from another data source
-    pub fn load(t: &TableProvider) -> Result<Self> {
+    pub fn load(t: &dyn TableProvider) -> Result<Self> {
         let schema = t.schema();
         let partitions = t.scan(&None, 1024 * 1024)?;
 
@@ -130,9 +131,9 @@ pub struct MemBatchIterator {
     batches: Vec<RecordBatch>,
 }
 
-impl RecordBatchIterator for MemBatchIterator {
-    fn schema(&self) -> &Arc<Schema> {
-        &self.schema
+impl BatchIterator for MemBatchIterator {
+    fn schema(&self) -> Arc<Schema> {
+        self.schema.clone()
     }
 
     fn next(&mut self) -> Result<Option<RecordBatch>> {

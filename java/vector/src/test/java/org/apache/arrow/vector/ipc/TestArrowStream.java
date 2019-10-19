@@ -27,11 +27,9 @@ import java.io.IOException;
 import java.nio.channels.Channels;
 import java.util.Collections;
 
-import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.TinyIntVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.Assert;
 import org.junit.Test;
@@ -119,7 +117,7 @@ public class TestArrowStream extends BaseFileTest {
           assertTrue(reader.loadNextBatch());
         }
         // TODO figure out why reader isn't getting padding bytes
-        assertEquals(bytesWritten, reader.bytesRead() + 4);
+        assertEquals(bytesWritten, reader.bytesRead() + 8);
         assertFalse(reader.loadNextBatch());
         assertEquals(0, reader.getVectorSchemaRoot().getRowCount());
       }

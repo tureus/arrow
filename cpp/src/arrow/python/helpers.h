@@ -62,7 +62,7 @@ Status ImportModule(const std::string& module_name, OwnedRef* ref);
 // \param[out] ref The OwnedRef containing the \c name attribute of the Python module \c
 // module
 ARROW_PYTHON_EXPORT
-Status ImportFromModule(const OwnedRef& module, const std::string& name, OwnedRef* ref);
+Status ImportFromModule(PyObject* module, const std::string& name, OwnedRef* ref);
 
 // \brief Check whether obj is an integer, independent of Python versions.
 inline bool IsPyInteger(PyObject* obj) {
@@ -119,15 +119,27 @@ inline Status CastSize(Py_ssize_t size, int32_t* out,
   return Status::OK();
 }
 
+inline Status CastSize(Py_ssize_t size, int64_t* out, const char* error_msg = NULLPTR) {
+  // size is assumed to be positive
+  *out = static_cast<int64_t>(size);
+  return Status::OK();
+}
+
 // \brief Print the Python object's __str__ form along with the passed error
 // message
 ARROW_PYTHON_EXPORT
 Status InvalidValue(PyObject* obj, const std::string& why);
 
 ARROW_PYTHON_EXPORT
+Status InvalidType(PyObject* obj, const std::string& why);
+
+ARROW_PYTHON_EXPORT
 Status IntegerScalarToDoubleSafe(PyObject* obj, double* result);
 ARROW_PYTHON_EXPORT
 Status IntegerScalarToFloat32Safe(PyObject* obj, float* result);
+
+// \brief Print Python object __repr__
+void DebugPrint(PyObject* obj);
 
 }  // namespace internal
 }  // namespace py

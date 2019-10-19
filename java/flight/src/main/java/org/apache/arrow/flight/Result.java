@@ -21,6 +21,11 @@ import org.apache.arrow.flight.impl.Flight;
 
 import com.google.protobuf.ByteString;
 
+/**
+ * Opaque result returned after executing an action.
+ *
+ * <p>POJO wrapper around the Flight protocol buffer message sharing the same name.
+ */
 public class Result {
 
   private final byte[] body;
@@ -29,7 +34,7 @@ public class Result {
     this.body = body;
   }
 
-  public Result(Flight.Result result) {
+  Result(Flight.Result result) {
     this.body = result.getBody().toByteArray();
   }
 

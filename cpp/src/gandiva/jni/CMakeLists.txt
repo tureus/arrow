@@ -19,6 +19,10 @@ if(CMAKE_VERSION VERSION_LESS 3.11)
   message(FATAL_ERROR "Building the Gandiva JNI bindings requires CMake version >= 3.11")
 endif()
 
+if(MSVC)
+  add_definitions(-DPROTOBUF_USE_DLLS)
+endif()
+
 # Find JNI
 find_package(JNI REQUIRED)
 
@@ -33,9 +37,11 @@ get_filename_component(ABS_GANDIVA_PROTO ${CMAKE_SOURCE_DIR}/src/gandiva/proto/T
 
 add_custom_command(OUTPUT ${PROTO_OUTPUT_FILES}
                    COMMAND protobuf::protoc
-                           --proto_path ${CMAKE_SOURCE_DIR}/src/gandiva/proto
-                           --cpp_out ${PROTO_OUTPUT_DIR}
-                                     ${CMAKE_SOURCE_DIR}/src/gandiva/proto/Types.proto
+                           --proto_path
+                           ${CMAKE_SOURCE_DIR}/src/gandiva/proto
+                           --cpp_out
+                           ${PROTO_OUTPUT_DIR}
+                           ${CMAKE_SOURCE_DIR}/src/gandiva/proto/Types.proto
                    DEPENDS ${ABS_GANDIVA_PROTO} protobuf::libprotobuf
                    COMMENT "Running PROTO compiler on Types.proto"
                    VERBATIM)
@@ -78,7 +84,7 @@ add_arrow_lib(gandiva_jni
               EXTRA_INCLUDES
               $<INSTALL_INTERFACE:include>
               $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-              ${JNI_HEADERS_DIR}
+              $<BUILD_INTERFACE:${JNI_HEADERS_DIR}>
               PRIVATE_INCLUDES
               ${JNI_INCLUDE_DIRS}
               ${CMAKE_CURRENT_BINARY_DIR})

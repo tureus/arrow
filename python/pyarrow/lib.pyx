@@ -19,15 +19,16 @@
 # distutils: language = c++
 # cython: embedsignature = True
 
-from collections import OrderedDict
+from __future__ import absolute_import
+
 import datetime
 import decimal as _pydecimal
 import json
-import multiprocessing
 import numpy as np
 import os
 import six
-from pyarrow.compat import frombytes, tobytes
+
+from pyarrow.compat import frombytes, tobytes, ordered_dict
 
 from cython.operator cimport dereference as deref
 from pyarrow.includes.libarrow cimport *
@@ -35,7 +36,11 @@ from pyarrow.includes.common cimport PyObject_to_object
 cimport pyarrow.includes.libarrow as libarrow
 cimport cpython as cp
 
+# Initialize NumPy C API
 arrow_init_numpy()
+# Initialize PyArrow C++ API
+# (used from some of our C++ code, see e.g. ARROW-5260)
+import_pyarrow()
 set_numpy_nan(np.nan)
 
 
@@ -80,10 +85,14 @@ Type_DATE64 = _Type_DATE64
 Type_TIMESTAMP = _Type_TIMESTAMP
 Type_TIME32 = _Type_TIME32
 Type_TIME64 = _Type_TIME64
+Type_DURATION = _Type_DURATION
 Type_BINARY = _Type_BINARY
 Type_STRING = _Type_STRING
+Type_LARGE_BINARY = _Type_LARGE_BINARY
+Type_LARGE_STRING = _Type_LARGE_STRING
 Type_FIXED_SIZE_BINARY = _Type_FIXED_SIZE_BINARY
 Type_LIST = _Type_LIST
+Type_LARGE_LIST = _Type_LARGE_LIST
 Type_STRUCT = _Type_STRUCT
 Type_UNION = _Type_UNION
 Type_DICTIONARY = _Type_DICTIONARY
@@ -115,6 +124,9 @@ include "builder.pxi"
 
 # Column, Table, Record Batch
 include "table.pxi"
+
+# Tensors
+include "tensor.pxi"
 
 # File IO
 include "io.pxi"

@@ -17,34 +17,142 @@
 
 package org.apache.arrow.flight;
 
+import java.lang.reflect.InvocationTargetException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Objects;
+
 import org.apache.arrow.flight.impl.Flight;
 
+/** A URI where a Flight stream is available. */
 public class Location {
+  private final URI uri;
 
-  private final String host;
-  private final int port;
+  /**
+   * Constructs a new instance.
+   *
+   * @param uri the URI of the Flight service
+   * @throws IllegalArgumentException if the URI scheme is unsupported
+   */
+  public Location(String uri) throws URISyntaxException {
+    this(new URI(uri));
+  }
 
-  public Location(String host, int port) {
+  /**
+   * Construct a new instance from an existing URI.
+   *
+   * @param uri the URI of the Flight service
+   */
+  public Location(URI uri) {
     super();
-    this.host = host;
-    this.port = port;
+    Objects.requireNonNull(uri);
+    this.uri = uri;
   }
 
-  Location(Flight.Location location) {
-    this.host = location.getHost();
-    this.port = location.getPort();
+  public URI getUri() {
+    return uri;
   }
 
-  public String getHost() {
-    return host;
+  /**
+   * Helper method to turn this Location into a SocketAddress.
+   *
+   * @return null if could not be converted
+   */
+  SocketAddress toSocketAddress() {
+    switch (uri.getScheme()) {
+      case LocationSchemes.GRPC:
+      case LocationSchemes.GRPC_TLS:
+      case LocationSchemes.GRPC_INSECURE: {
+        return new InetSocketAddress(uri.getHost(), uri.getPort());
+      }
+
+      case LocationSchemes.GRPC_DOMAIN_SOCKET: {
+        try {
+          // This dependency is not available on non-Unix platforms.
+          return (SocketAddress) Class.forName("io.netty.channel.unix.DomainSocketAddress")
+              .getConstructor(String.class)
+              .newInstance(uri.getPath());
+        } catch (InstantiationException | ClassNotFoundException | InvocationTargetException |
+            NoSuchMethodException | IllegalAccessException e) {
+          return null;
+        }
+      }
+
+      default: {
+        return null;
+      }
+    }
   }
 
-  public int getPort() {
-    return port;
-  }
-
+  /**
+   * Convert this Location into its protocol-level representation.
+   */
   Flight.Location toProtocol() {
-    return Flight.Location.newBuilder().setHost(host).setPort(port).build();
+    return Flight.Location.newBuilder().setUri(uri.toString()).build();
   }
 
+  /**
+   * Construct a URI for a Flight+gRPC server without transport security.
+   *
+   * @throws IllegalArgumentException if the constructed URI is invalid.
+   */
+  public static Location forGrpcInsecure(String host, int port) {
+    try {
+      return new Location(new URI(LocationSchemes.GRPC_INSECURE, null, host, port, null, null, null));
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(e);
+    }
+  }
+
+  /**
+   * Construct a URI for a Flight+gRPC server with transport security.
+   *
+   * @throws IllegalArgumentException if the constructed URI is invalid.
+   */
+  public static Location forGrpcTls(String host, int port) {
+    try {
+      return new Location(new URI(LocationSchemes.GRPC_TLS, null, host, port, null, null, null));
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(e);
+    }
+  }
+
+  /**
+   * Construct a URI for a Flight+gRPC server over a Unix domain socket.
+   *
+   * @throws IllegalArgumentException if the constructed URI is invalid.
+   */
+  public static Location forGrpcDomainSocket(String path) {
+    try {
+      return new Location(new URI(LocationSchemes.GRPC_DOMAIN_SOCKET, null, path, null));
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(e);
+    }
+  }
+
+  @Override
+  public String toString() {
+    return "Location{" +
+        "uri=" + uri +
+        '}';
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    Location location = (Location) o;
+    return uri.equals(location.uri);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(uri);
+  }
 }

@@ -30,6 +30,8 @@ import java.util.Objects;
 import org.apache.arrow.memory.BaseAllocator;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
+import org.apache.arrow.memory.util.ByteFunctionHelpers;
+import org.apache.arrow.memory.util.hash.ArrowBufHasher;
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.AddOrGetResult;
 import org.apache.arrow.vector.BaseValueVector;
@@ -38,7 +40,9 @@ import org.apache.arrow.vector.BufferBacked;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.ZeroVector;
+import org.apache.arrow.vector.compare.VectorVisitor;
 import org.apache.arrow.vector.complex.impl.UnionFixedSizeListReader;
+import org.apache.arrow.vector.complex.impl.UnionFixedSizeListWriter;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -53,7 +57,8 @@ import org.apache.arrow.vector.util.TransferPair;
 
 import io.netty.buffer.ArrowBuf;
 
-public class FixedSizeListVector extends BaseValueVector implements FieldVector, PromotableVector {
+/** A ListVector where every list value is of the same size. */
+public class FixedSizeListVector extends BaseValueVector implements BaseListVector, PromotableVector {
 
   public static FixedSizeListVector empty(String name, int size, BufferAllocator allocator) {
     FieldType fieldType = FieldType.nullable(new ArrowType.FixedSizeList(size));
@@ -64,12 +69,15 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
   private ArrowBuf validityBuffer;
   private final int listSize;
   private final FieldType fieldType;
+  private final String name;
 
   private UnionFixedSizeListReader reader;
   private int valueCount;
   private int validityAllocationSizeInBytes;
 
-  // deprecated, use FieldType or static constructor instead
+  /**
+   * @deprecated use FieldType or static constructor instead.
+   */
   @Deprecated
   public FixedSizeListVector(String name,
                              BufferAllocator allocator,
@@ -79,17 +87,26 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     this(name, allocator, new FieldType(true, new ArrowType.FixedSizeList(listSize), dictionary), schemaChangeCallback);
   }
 
+  /**
+   * Creates a new instance.
+   *
+   * @param name The name for the vector.
+   * @param allocator The allocator to use for creating/reallocating buffers for the vector.
+   * @param fieldType The underlying data type of the vector.
+   * @param unusedSchemaChangeCallback Currently unused.
+   */
   public FixedSizeListVector(String name,
                              BufferAllocator allocator,
                              FieldType fieldType,
-                             CallBack schemaChangeCallback) {
-    super(name, allocator);
+                             CallBack unusedSchemaChangeCallback) {
+    super(allocator);
+
+    this.name = name;
     this.validityBuffer = allocator.getEmpty();
     this.vector = ZeroVector.INSTANCE;
     this.fieldType = fieldType;
     this.listSize = ((ArrowType.FixedSizeList) fieldType.getType()).getListSize();
     Preconditions.checkArgument(listSize > 0, "list size must be positive");
-    this.reader = new UnionFixedSizeListReader(this);
     this.valueCount = 0;
     this.validityAllocationSizeInBytes = getValidityBufferSizeFromCount(INITIAL_VALUE_ALLOCATION);
   }
@@ -105,6 +122,12 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     return MinorType.FIXED_SIZE_LIST;
   }
 
+  @Override
+  public String getName() {
+    return name;
+  }
+
+  /** Get the fixed size for each list. */
   public int getListSize() {
     return listSize;
   }
@@ -135,7 +158,7 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
 
     ArrowBuf bitBuffer = ownBuffers.get(0);
 
-    validityBuffer.release();
+    validityBuffer.getReferenceManager().release();
     validityBuffer = BitVectorHelper.loadValidityBuffer(fieldNode, bitBuffer, allocator);
     valueCount = fieldNode.getLength();
 
@@ -164,7 +187,14 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
 
   @Override
   public UnionFixedSizeListReader getReader() {
+    if (reader == null) {
+      reader = new UnionFixedSizeListReader(this);
+    }
     return reader;
+  }
+
+  private void invalidateReader() {
+    reader = null;
   }
 
   @Override
@@ -231,13 +261,31 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     final ArrowBuf newBuf = allocator.buffer((int) newAllocationSize);
     newBuf.setBytes(0, validityBuffer, 0, currentBufferCapacity);
     newBuf.setZero(currentBufferCapacity, newBuf.capacity() - currentBufferCapacity);
-    validityBuffer.release(1);
+    validityBuffer.getReferenceManager().release(1);
     validityBuffer = newBuf;
     validityAllocationSizeInBytes = (int) newAllocationSize;
   }
 
   public FieldVector getDataVector() {
     return vector;
+  }
+
+  /**
+   * Start a new value in the list vector.
+   *
+   * @param index index of the value to start
+   */
+  public int startNewValue(int index) {
+    while (index >= getValidityBufferValueCapacity()) {
+      reallocValidityBuffer();
+    }
+
+    BitVectorHelper.setValidityBitToOne(validityBuffer, index);
+    return index * listSize;
+  }
+
+  public UnionFixedSizeListWriter getWriter() {
+    return new UnionFixedSizeListWriter(this);
   }
 
   @Override
@@ -305,7 +353,7 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     }
     if (clear) {
       for (ArrowBuf buffer : buffers) {
-        buffer.retain();
+        buffer.getReferenceManager().retain();
       }
       clear();
     }
@@ -326,7 +374,7 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     boolean created = false;
     if (vector == ZeroVector.INSTANCE) {
       vector = type.createNewSingleVector(DATA_VECTOR_NAME, allocator, null);
-      this.reader = new UnionFixedSizeListReader(this);
+      invalidateReader();
       created = true;
     }
     // returned vector must have the same field
@@ -339,11 +387,14 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     return new AddOrGetResult<>((T) vector, created);
   }
 
-  public void copyFromSafe(int inIndex, int outIndex, FixedSizeListVector from) {
+  @Override
+  public void copyFromSafe(int inIndex, int outIndex, ValueVector from) {
     copyFrom(inIndex, outIndex, from);
   }
 
-  public void copyFrom(int fromIndex, int thisIndex, FixedSizeListVector from) {
+  @Override
+  public void copyFrom(int fromIndex, int thisIndex, ValueVector from) {
+    Preconditions.checkArgument(this.getMinorType() == from.getMinorType());
     TransferPair pair = from.makeTransferPair(this);
     pair.copyValueSafe(fromIndex, thisIndex);
   }
@@ -353,7 +404,7 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     UnionVector vector = new UnionVector(name, allocator, null);
     this.vector.clear();
     this.vector = vector;
-    this.reader = new UnionFixedSizeListReader(this);
+    invalidateReader();
     return vector;
   }
 
@@ -399,10 +450,16 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     return vals;
   }
 
+  /**
+   * Returns whether the value at index null.
+   */
   public boolean isNull(int index) {
     return (isSet(index) == 0);
   }
 
+  /**
+   * Returns non-zero when the value at index is non-null.
+   */
   public int isSet(int index) {
     final int byteIndex = index >> 3;
     final byte b = validityBuffer.getByte(byteIndex);
@@ -420,10 +477,17 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     return valueCount;
   }
 
+  /**
+   * Returns the number of elements the validity buffer can represent with its
+   * current capacity.
+   */
   private int getValidityBufferValueCapacity() {
-    return (int) (validityBuffer.capacity() * 8L);
+    return validityBuffer.capacity() * 8;
   }
 
+  /**
+   * Sets the value at index to null.  Reallocates if index is larger than capacity.
+   */
   public void setNull(int index) {
     while (index >= getValidityBufferValueCapacity()) {
       reallocValidityBuffer();
@@ -431,6 +495,7 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     BitVectorHelper.setValidityBit(validityBuffer, index, 0);
   }
 
+  /** Sets the value at index to not-null. Reallocates if index is larger than capacity. */
   public void setNotNull(int index) {
     while (index >= getValidityBufferValueCapacity()) {
       reallocValidityBuffer();
@@ -462,6 +527,38 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     return new TransferImpl((FixedSizeListVector) target);
   }
 
+  @Override
+  public int hashCode(int index) {
+    return hashCode(index, null);
+  }
+
+  @Override
+  public int hashCode(int index, ArrowBufHasher hasher) {
+    if (isSet(index) == 0) {
+      return 0;
+    }
+    int hash = 0;
+    for (int i = 0; i < listSize; i++) {
+      hash = ByteFunctionHelpers.combineHash(hash, vector.hashCode(index * listSize + i, hasher));
+    }
+    return hash;
+  }
+
+  @Override
+  public <OUT, IN> OUT accept(VectorVisitor<OUT, IN> visitor, IN value) {
+    return visitor.visit(this, value);
+  }
+
+  @Override
+  public int getElementStartIndex(int index) {
+    return listSize * index;
+  }
+
+  @Override
+  public int getElementEndIndex(int index) {
+    return listSize * (index + 1);
+  }
+
   private class TransferImpl implements TransferPair {
 
     FixedSizeListVector to;
@@ -481,17 +578,80 @@ public class FixedSizeListVector extends BaseValueVector implements FieldVector,
     public void transfer() {
       to.clear();
       dataPair.transfer();
-      to.validityBuffer = validityBuffer.transferOwnership(to.allocator).buffer;
+      to.validityBuffer = BaseValueVector.transferBuffer(validityBuffer, to.allocator);
       to.setValueCount(valueCount);
       clear();
     }
 
     @Override
     public void splitAndTransfer(int startIndex, int length) {
+      Preconditions.checkArgument(startIndex + length <= valueCount);
+      final int startPoint = listSize * startIndex;
+      final int sliceLength = listSize * length;
       to.clear();
-      to.allocateNew();
-      for (int i = 0; i < length; i++) {
-        copyValueSafe(startIndex + i, i);
+
+      /* splitAndTransfer validity buffer */
+      splitAndTransferValidityBuffer(startIndex, length, to);
+      /* splitAndTransfer data buffer */
+      dataPair.splitAndTransfer(startPoint, sliceLength);
+      to.setValueCount(length);
+    }
+
+    /*
+     * transfer the validity.
+     */
+    private void splitAndTransferValidityBuffer(int startIndex, int length, FixedSizeListVector target) {
+      int firstByteSource = BitVectorHelper.byteIndex(startIndex);
+      int lastByteSource = BitVectorHelper.byteIndex(valueCount - 1);
+      int byteSizeTarget = getValidityBufferSizeFromCount(length);
+      int offset = startIndex % 8;
+
+      if (length > 0) {
+        if (offset == 0) {
+          // slice
+          if (target.validityBuffer != null) {
+            target.validityBuffer.getReferenceManager().release();
+          }
+          target.validityBuffer = validityBuffer.slice(firstByteSource, byteSizeTarget);
+          target.validityBuffer.getReferenceManager().retain(1);
+        } else {
+          /* Copy data
+           * When the first bit starts from the middle of a byte (offset != 0),
+           * copy data from src BitVector.
+           * Each byte in the target is composed by a part in i-th byte,
+           * another part in (i+1)-th byte.
+           */
+          target.allocateValidityBuffer(byteSizeTarget);
+
+          for (int i = 0; i < byteSizeTarget - 1; i++) {
+            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer, firstByteSource + i, offset);
+            byte b2 = BitVectorHelper.getBitsFromNextByte(validityBuffer, firstByteSource + i + 1, offset);
+
+            target.validityBuffer.setByte(i, (b1 + b2));
+          }
+
+          /* Copying the last piece is done in the following manner:
+           * if the source vector has 1 or more bytes remaining, we copy
+           * the last piece as a byte formed by shifting data
+           * from the current byte and the next byte.
+           *
+           * if the source vector has no more bytes remaining
+           * (we are at the last byte), we copy the last piece as a byte
+           * by shifting data from the current byte.
+           */
+          if ((firstByteSource + byteSizeTarget - 1) < lastByteSource) {
+            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer,
+                firstByteSource + byteSizeTarget - 1, offset);
+            byte b2 = BitVectorHelper.getBitsFromNextByte(validityBuffer,
+                firstByteSource + byteSizeTarget, offset);
+
+            target.validityBuffer.setByte(byteSizeTarget - 1, b1 + b2);
+          } else {
+            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer,
+                firstByteSource + byteSizeTarget - 1, offset);
+            target.validityBuffer.setByte(byteSizeTarget - 1, b1);
+          }
+        }
       }
     }
 

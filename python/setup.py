@@ -48,6 +48,12 @@ if Cython.__version__ < '0.29':
 setup_dir = os.path.abspath(os.path.dirname(__file__))
 
 
+ext_suffix = sysconfig.get_config_var('EXT_SUFFIX')
+if ext_suffix is None:
+    # https://bugs.python.org/issue19555
+    ext_suffix = sysconfig.get_config_var('SO')
+
+
 @contextlib.contextmanager
 def changed_dir(dirname):
     oldcwd = os.getcwd()
@@ -135,6 +141,8 @@ class build_ext(_build_ext):
             if not hasattr(sys, 'gettotalrefcount'):
                 self.build_type = 'release'
 
+        self.with_s3 = strtobool(
+            os.environ.get('PYARROW_WITH_S3', '0'))
         self.with_cuda = strtobool(
             os.environ.get('PYARROW_WITH_CUDA', '0'))
         self.with_flight = strtobool(
@@ -162,15 +170,23 @@ class build_ext(_build_ext):
 
     CYTHON_MODULE_NAMES = [
         'lib',
+        '_fs',
         '_csv',
+        '_json',
         '_cuda',
         '_flight',
         '_parquet',
         '_orc',
         '_plasma',
+        '_s3fs',
         'gandiva']
 
     def _run_cmake(self):
+        # check if build_type is correctly passed / set
+        if self.build_type.lower() not in ('release', 'debug'):
+            raise ValueError("--build-type (or PYARROW_BUILD_TYPE) needs to "
+                             "be 'release' or 'debug'")
+
         # The directory containing this setup.py
         source = osp.dirname(osp.abspath(__file__))
 
@@ -202,6 +218,8 @@ class build_ext(_build_ext):
 
             if self.cmake_generator:
                 cmake_options += ['-G', self.cmake_generator]
+            if self.with_s3:
+                cmake_options.append('-DPYARROW_BUILD_S3=on')
             if self.with_cuda:
                 cmake_options.append('-DPYARROW_BUILD_CUDA=on')
             if self.with_flight:
@@ -349,9 +367,11 @@ class build_ext(_build_ext):
                 move_shared_libs(build_prefix, build_lib, "arrow")
                 move_shared_libs(build_prefix, build_lib, "arrow_python")
                 if self.with_cuda:
-                    move_shared_libs(build_prefix, build_lib, "arrow_gpu")
+                    move_shared_libs(build_prefix, build_lib, "arrow_cuda")
                 if self.with_flight:
                     move_shared_libs(build_prefix, build_lib, "arrow_flight")
+                    move_shared_libs(build_prefix, build_lib,
+                                     "arrow_python_flight")
                 if self.with_plasma:
                     move_shared_libs(build_prefix, build_lib, "plasma")
                 if self.with_gandiva:
@@ -376,13 +396,20 @@ class build_ext(_build_ext):
                     zlib_lib_name = 'zlib'
                     move_shared_libs(build_prefix, build_lib, zlib_lib_name,
                                      implib_required=False)
+                    if self.with_flight:
+                        # DLL dependencies for gRPC / Flight
+                        for lib_name in ['cares', 'libprotobuf',
+                                         'libcrypto-1_1-x64',
+                                         'libssl-1_1-x64']:
+                            move_shared_libs(build_prefix, build_lib, lib_name,
+                                             implib_required=False)
 
             if self.with_plasma:
                 # Move the plasma store
-                source = os.path.join(self.build_type, "plasma_store_server")
+                source = os.path.join(self.build_type, "plasma-store-server")
                 target = os.path.join(build_lib,
                                       self._get_build_dir(),
-                                      "plasma_store_server")
+                                      "plasma-store-server")
                 shutil.move(source, target)
 
     def _failure_permitted(self, name):
@@ -393,6 +420,8 @@ class build_ext(_build_ext):
         if name == '_orc' and not self.with_orc:
             return True
         if name == '_flight' and not self.with_flight:
+            return True
+        if name == '_s3fs' and not self.with_s3:
             return True
         if name == '_cuda' and not self.with_cuda:
             return True
@@ -407,10 +436,7 @@ class build_ext(_build_ext):
 
     def _get_cmake_ext_path(self, name):
         # This is the name of the arrow C-extension
-        suffix = sysconfig.get_config_var('EXT_SUFFIX')
-        if suffix is None:
-            suffix = sysconfig.get_config_var('SO')
-        filename = name + suffix
+        filename = name + ext_suffix
         return pjoin(self._get_build_dir(), filename)
 
     def get_ext_generated_cpp_source(self, name):
@@ -430,16 +456,14 @@ class build_ext(_build_ext):
     def get_ext_built(self, name):
         if sys.platform == 'win32':
             head, tail = os.path.split(name)
-            suffix = sysconfig.get_config_var('SO')
             # Visual Studio seems to differ from other generators in
             # where it places output files.
             if self.cmake_generator.startswith('Visual Studio'):
-                return pjoin(head, self.build_type, tail + suffix)
+                return pjoin(head, self.build_type, tail + ext_suffix)
             else:
-                return pjoin(head, tail + suffix)
+                return pjoin(head, tail + ext_suffix)
         else:
-            suffix = sysconfig.get_config_var('SO')
-            return pjoin(self.build_type, name + suffix)
+            return pjoin(self.build_type, name + ext_suffix)
 
     def get_names(self):
         return self._found_names
@@ -501,7 +525,7 @@ def _move_shared_libs_unix(build_prefix, build_lib, lib_name):
 
 # If the event of not running from a git clone (e.g. from a git archive
 # or a Python sdist), see if we can set the version number ourselves
-default_version = '0.14.0-SNAPSHOT'
+default_version = '1.0.0-SNAPSHOT'
 if (not os.path.exists('../.git')
         and not os.environ.get('SETUPTOOLS_SCM_PRETEND_VERSION')):
     if os.path.exists('PKG-INFO'):

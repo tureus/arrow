@@ -20,46 +20,70 @@
 using Rcpp::List;
 using Rcpp::wrap;
 
-// [[Rcpp::export]]
+#if defined(ARROW_R_WITH_ARROW)
+
+// [[arrow::export]]
 int ChunkedArray__length(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
   return chunked_array->length();
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 int ChunkedArray__null_count(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
   return chunked_array->null_count();
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 int ChunkedArray__num_chunks(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
   return chunked_array->num_chunks();
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::Array> ChunkedArray__chunk(
     const std::shared_ptr<arrow::ChunkedArray>& chunked_array, int i) {
   return chunked_array->chunk(i);
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 List ChunkedArray__chunks(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
   return wrap(chunked_array->chunks());
 }
 
-// [[Rcpp::export]]
+// [[arrow::export]]
 std::shared_ptr<arrow::DataType> ChunkedArray__type(
     const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
   return chunked_array->type();
 }
 
-// [[Rcpp::export]]
-std::shared_ptr<arrow::ChunkedArray> ChunkArray__Slice1(
+// [[arrow::export]]
+std::shared_ptr<arrow::ChunkedArray> ChunkedArray__Slice1(
     const std::shared_ptr<arrow::ChunkedArray>& chunked_array, int offset) {
   return chunked_array->Slice(offset);
 }
 
-// [[Rcpp::export]]
-std::shared_ptr<arrow::ChunkedArray> ChunkArray__Slice2(
+// [[arrow::export]]
+std::shared_ptr<arrow::ChunkedArray> ChunkedArray__Slice2(
     const std::shared_ptr<arrow::ChunkedArray>& chunked_array, int offset, int length) {
   return chunked_array->Slice(offset, length);
 }
+
+// [[arrow::export]]
+std::shared_ptr<arrow::ChunkedArray> ChunkedArray__View(
+    const std::shared_ptr<arrow::ChunkedArray>& array,
+    const std::shared_ptr<arrow::DataType>& type) {
+  std::shared_ptr<arrow::ChunkedArray> out;
+  STOP_IF_NOT_OK(array->View(type, &out));
+  return out;
+}
+
+// [[arrow::export]]
+void ChunkedArray__Validate(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) {
+  STOP_IF_NOT_OK(chunked_array->Validate());
+}
+
+// [[arrow::export]]
+bool ChunkedArray__Equals(const std::shared_ptr<arrow::ChunkedArray>& x,
+                          const std::shared_ptr<arrow::ChunkedArray>& y) {
+  return x->Equals(y);
+}
+
+#endif

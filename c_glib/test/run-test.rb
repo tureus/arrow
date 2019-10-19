@@ -63,9 +63,11 @@ end
 
 require "fileutils"
 require "rbconfig"
+require "stringio"
 require "tempfile"
 require "zlib"
 require_relative "helper/buildable"
+require_relative "helper/data-type"
 require_relative "helper/fixture"
 require_relative "helper/omittable"
 require_relative "helper/plasma-store"

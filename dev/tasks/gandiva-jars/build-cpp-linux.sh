@@ -22,12 +22,16 @@ source /multibuild/manylinux_utils.sh
 # Quit on failure
 set -e
 
-# Print commands for debugging
-set -x
+PYTHON_VERSION=2.7
+CPYTHON_PATH="$(cpython_path ${PYTHON_VERSION} 16)"
+PYTHON_INTERPRETER="${CPYTHON_PATH}/bin/python"
+PIP="${CPYTHON_PATH}/bin/pip"
 
 ARROW_BUILD_DIR=/tmp/arrow-build
 mkdir -p "${ARROW_BUILD_DIR}"
 pushd "${ARROW_BUILD_DIR}"
+
+PATH="${CPYTHON_PATH}/bin:${PATH}"
 
 cmake -DCMAKE_BUILD_TYPE=Release \
     -DARROW_DEPENDENCY_SOURCE="SYSTEM" \
@@ -42,11 +46,14 @@ cmake -DCMAKE_BUILD_TYPE=Release \
     -DARROW_RPATH_ORIGIN=ON \
     -DARROW_PYTHON=OFF \
     -DARROW_PARQUET=OFF \
+    -DARROW_DATASET=OFF \
+    -DARROW_FILESYSTEM=OFF \
+    -DPARQUET_BUILD_ENCRYPTION=OFF \
+    -DPythonInterp_FIND_VERSION=${PYTHON_VERSION} \
     -DARROW_GANDIVA=ON \
     -DARROW_GANDIVA_JAVA=ON \
     -DARROW_GANDIVA_JAVA7=ON \
     -DBoost_NAMESPACE=arrow_boost \
-    -Ddouble-conversion_SOURCE=BUNDLED \
     -Dgflags_SOURCE=BUNDLED \
     -DRapidJSON_SOURCE=BUNDLED \
     -DRE2_SOURCE=BUNDLED \

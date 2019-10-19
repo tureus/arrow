@@ -2,18 +2,24 @@
 % Please edit documentation in R/feather.R
 \name{write_feather}
 \alias{write_feather}
-\alias{write_feather_RecordBatch}
-\title{Write data in the feather format}
+\title{Write data in the Feather format}
 \usage{
-write_feather(data, stream)
-
-write_feather_RecordBatch(data, stream)
+write_feather(x, sink)
 }
 \arguments{
-\item{data}{frame or arrow::RecordBatch}
+\item{x}{\code{data.frame} or RecordBatch}
 
-\item{stream}{A file path or an arrow::io::OutputStream}
+\item{sink}{A file path or an OutputStream}
 }
 \description{
-Write data in the feather format
+Write data in the Feather format
+}
+\examples{
+\donttest{
+try({
+  tf <- tempfile()
+  on.exit(unlink(tf))
+  write_feather(mtcars, tf)
+})
+}
 }

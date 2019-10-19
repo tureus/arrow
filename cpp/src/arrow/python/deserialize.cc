@@ -21,7 +21,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,11 +39,11 @@
 #include "arrow/util/parsing.h"
 
 #include "arrow/python/common.h"
+#include "arrow/python/datetime.h"
 #include "arrow/python/helpers.h"
 #include "arrow/python/numpy_convert.h"
 #include "arrow/python/pyarrow.h"
 #include "arrow/python/serialize.h"
-#include "arrow/python/util/datetime.h"
 
 namespace arrow {
 
@@ -155,7 +154,7 @@ Status GetValue(PyObject* context, const Array& arr, int64_t index, int8_t type,
       *result = PyFloat_FromDouble(checked_cast<const DoubleArray&>(arr).Value(index));
       return Status::OK();
     case PythonType::DATE64: {
-      RETURN_NOT_OK(PyDateTime_from_int(
+      RETURN_NOT_OK(internal::PyDateTime_from_int(
           checked_cast<const Date64Array&>(arr).Value(index), TimeUnit::MICRO, result));
       RETURN_IF_PYERROR();
       return Status::OK();
@@ -236,7 +235,7 @@ Status DeserializeSequence(PyObject* context, const Array& array, int64_t start_
       int64_t offset = value_offsets[i];
       uint8_t type = type_ids[i];
       PyObject* value;
-      RETURN_NOT_OK(GetValue(context, *data.UnsafeChild(type), offset,
+      RETURN_NOT_OK(GetValue(context, *data.child(type), offset,
                              python_types[type_ids[i]], base, blobs, &value));
       RETURN_NOT_OK(set_item(result.obj(), i - start_idx, value));
     }
@@ -344,8 +343,6 @@ Status ReadSerializedObject(io::RandomAccessFile* src, SerializedPyObject* out) 
 Status DeserializeObject(PyObject* context, const SerializedPyObject& obj, PyObject* base,
                          PyObject** out) {
   PyAcquireGIL lock;
-  PyDateTime_IMPORT;
-  import_pyarrow();
   return DeserializeList(context, *obj.batch->column(0), 0, obj.batch->num_rows(), base,
                          obj, out);
 }

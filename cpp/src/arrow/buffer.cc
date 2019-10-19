@@ -17,21 +17,23 @@
 
 #include "arrow/buffer.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
-#include "arrow/util/bit-util.h"
+#include "arrow/util/bit_util.h"
 #include "arrow/util/logging.h"
+#include "arrow/util/string.h"
 
 namespace arrow {
 
 Status Buffer::Copy(const int64_t start, const int64_t nbytes, MemoryPool* pool,
                     std::shared_ptr<Buffer>* out) const {
   // Sanity checks
-  DCHECK_LT(start, size_);
-  DCHECK_LE(nbytes, size_ - start);
+  ARROW_CHECK_LT(start, size_);
+  ARROW_CHECK_LE(nbytes, size_ - start);
 
   std::shared_ptr<ResizableBuffer> new_buffer;
   RETURN_NOT_OK(AllocateResizableBuffer(pool, nbytes, &new_buffer));
@@ -45,6 +47,10 @@ Status Buffer::Copy(const int64_t start, const int64_t nbytes, MemoryPool* pool,
 Status Buffer::Copy(const int64_t start, const int64_t nbytes,
                     std::shared_ptr<Buffer>* out) const {
   return Copy(start, nbytes, default_memory_pool(), out);
+}
+
+std::string Buffer::ToHexString() {
+  return HexEncode(data(), static_cast<size_t>(size()));
 }
 
 bool Buffer::Equals(const Buffer& other, const int64_t nbytes) const {
@@ -73,7 +79,8 @@ Status Buffer::FromString(const std::string& data, std::shared_ptr<Buffer>* out)
 
 class StlStringBuffer : public Buffer {
  public:
-  explicit StlStringBuffer(std::string&& data) : Buffer(nullptr, 0), input_(data) {
+  explicit StlStringBuffer(std::string&& data)
+      : Buffer(nullptr, 0), input_(std::move(data)) {
     data_ = reinterpret_cast<const uint8_t*>(input_.c_str());
     size_ = static_cast<int64_t>(input_.size());
     capacity_ = size_;

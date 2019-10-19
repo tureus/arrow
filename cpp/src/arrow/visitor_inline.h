@@ -24,41 +24,52 @@
 #include "arrow/extension_type.h"
 #include "arrow/scalar.h"
 #include "arrow/status.h"
-#include "arrow/tensor.h"
 #include "arrow/type.h"
-#include "arrow/util/bit-util.h"
+#include "arrow/util/bit_util.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/string_view.h"
 
 namespace arrow {
 
-#define ARROW_GENERATE_FOR_ALL_TYPES(ACTION) \
-  ACTION(Null);                              \
-  ACTION(Boolean);                           \
-  ACTION(Int8);                              \
-  ACTION(UInt8);                             \
-  ACTION(Int16);                             \
-  ACTION(UInt16);                            \
-  ACTION(Int32);                             \
-  ACTION(UInt32);                            \
-  ACTION(Int64);                             \
-  ACTION(UInt64);                            \
-  ACTION(HalfFloat);                         \
-  ACTION(Float);                             \
-  ACTION(Double);                            \
-  ACTION(String);                            \
-  ACTION(Binary);                            \
-  ACTION(FixedSizeBinary);                   \
-  ACTION(Date32);                            \
-  ACTION(Date64);                            \
-  ACTION(Timestamp);                         \
-  ACTION(Time32);                            \
-  ACTION(Time64);                            \
-  ACTION(Decimal128);                        \
-  ACTION(List);                              \
-  ACTION(Struct);                            \
-  ACTION(Union);                             \
-  ACTION(Dictionary);                        \
+#define ARROW_GENERATE_FOR_ALL_INTEGER_TYPES(ACTION) \
+  ACTION(Int8);                                      \
+  ACTION(UInt8);                                     \
+  ACTION(Int16);                                     \
+  ACTION(UInt16);                                    \
+  ACTION(Int32);                                     \
+  ACTION(UInt32);                                    \
+  ACTION(Int64);                                     \
+  ACTION(UInt64)
+
+#define ARROW_GENERATE_FOR_ALL_NUMERIC_TYPES(ACTION) \
+  ARROW_GENERATE_FOR_ALL_INTEGER_TYPES(ACTION);      \
+  ACTION(HalfFloat);                                 \
+  ACTION(Float);                                     \
+  ACTION(Double)
+
+#define ARROW_GENERATE_FOR_ALL_TYPES(ACTION)    \
+  ACTION(Null);                                 \
+  ACTION(Boolean);                              \
+  ARROW_GENERATE_FOR_ALL_NUMERIC_TYPES(ACTION); \
+  ACTION(String);                               \
+  ACTION(Binary);                               \
+  ACTION(LargeString);                          \
+  ACTION(LargeBinary);                          \
+  ACTION(FixedSizeBinary);                      \
+  ACTION(Duration);                             \
+  ACTION(Date32);                               \
+  ACTION(Date64);                               \
+  ACTION(Timestamp);                            \
+  ACTION(Time32);                               \
+  ACTION(Time64);                               \
+  ACTION(Decimal128);                           \
+  ACTION(List);                                 \
+  ACTION(LargeList);                            \
+  ACTION(Map);                                  \
+  ACTION(FixedSizeList);                        \
+  ACTION(Struct);                               \
+  ACTION(Union);                                \
+  ACTION(Dictionary);                           \
   ACTION(Extension)
 
 #define TYPE_VISIT_INLINE(TYPE_CLASS) \
@@ -69,6 +80,16 @@ template <typename VISITOR>
 inline Status VisitTypeInline(const DataType& type, VISITOR* visitor) {
   switch (type.id()) {
     ARROW_GENERATE_FOR_ALL_TYPES(TYPE_VISIT_INLINE);
+    case Type::INTERVAL: {
+      const auto& interval_type = dynamic_cast<const IntervalType&>(type);
+      if (interval_type.interval_type() == IntervalType::MONTHS) {
+        return visitor->Visit(internal::checked_cast<const MonthIntervalType&>(type));
+      }
+      if (interval_type.interval_type() == IntervalType::DAY_TIME) {
+        return visitor->Visit(internal::checked_cast<const DayTimeIntervalType&>(type));
+      }
+      break;
+    }
     default:
       break;
   }
@@ -87,6 +108,17 @@ template <typename VISITOR>
 inline Status VisitArrayInline(const Array& array, VISITOR* visitor) {
   switch (array.type_id()) {
     ARROW_GENERATE_FOR_ALL_TYPES(ARRAY_VISIT_INLINE);
+    case Type::INTERVAL: {
+      const auto& interval_type = dynamic_cast<const IntervalType&>(*array.type());
+      if (interval_type.interval_type() == IntervalType::MONTHS) {
+        return visitor->Visit(internal::checked_cast<const MonthIntervalArray&>(array));
+      }
+      if (interval_type.interval_type() == IntervalType::DAY_TIME) {
+        return visitor->Visit(internal::checked_cast<const DayTimeIntervalArray&>(array));
+      }
+      break;
+    }
+
     default:
       break;
   }
@@ -163,12 +195,13 @@ struct ArrayDataVisitor<T, enable_if_has_c_type<T>> {
 };
 
 template <typename T>
-struct ArrayDataVisitor<T, enable_if_binary<T>> {
+struct ArrayDataVisitor<T, enable_if_base_binary<T>> {
   template <typename Visitor>
   static Status Visit(const ArrayData& arr, Visitor* visitor) {
+    using offset_type = typename T::offset_type;
     constexpr uint8_t empty_value = 0;
 
-    const int32_t* offsets = arr.GetValues<int32_t>(1);
+    const offset_type* offsets = arr.GetValues<offset_type>(1);
     const uint8_t* data;
     if (!arr.buffers[2]) {
       data = &empty_value;
@@ -241,6 +274,17 @@ template <typename VISITOR>
 inline Status VisitScalarInline(const Scalar& scalar, VISITOR* visitor) {
   switch (scalar.type->id()) {
     ARROW_GENERATE_FOR_ALL_TYPES(SCALAR_VISIT_INLINE);
+    case Type::INTERVAL: {
+      const auto& interval_type =
+          internal::checked_cast<const IntervalType&>(*scalar.type);
+      if (interval_type.interval_type() == IntervalType::MONTHS) {
+        return visitor->Visit(internal::checked_cast<const MonthIntervalScalar&>(scalar));
+      }
+      if (interval_type.interval_type() == IntervalType::DAY_TIME) {
+        return visitor->Visit(
+            internal::checked_cast<const DayTimeIntervalScalar&>(scalar));
+      }
+    }
     default:
       break;
   }

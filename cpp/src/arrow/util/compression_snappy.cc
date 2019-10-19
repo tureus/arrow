@@ -19,7 +19,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <sstream>
 
 #include <snappy.h>
 
@@ -88,6 +87,5 @@ Status SnappyCodec::Compress(int64_t input_len, const uint8_t* input,
   *output_len = static_cast<int64_t>(output_size);
   return Status::OK();
 }
-
 }  // namespace util
 }  // namespace arrow

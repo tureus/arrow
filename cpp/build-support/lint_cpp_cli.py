@@ -30,6 +30,7 @@ arguments = parser.parse_args()
 _STRIP_COMMENT_REGEX = re.compile('(.+)?(?=//)')
 _NULLPTR_REGEX = re.compile(r'.*\bnullptr\b.*')
 _RETURN_NOT_OK_REGEX = re.compile(r'.*\sRETURN_NOT_OK.*')
+_ASSIGN_OR_RAISE_REGEX = re.compile(r'.*\sASSIGN_OR_RAISE.*')
 
 
 def _paths(paths):
@@ -48,13 +49,20 @@ def lint_file(path):
     fail_rules = [
         # rule, error message, rule-specific exclusions list
         (lambda x: '<mutex>' in x, 'Uses <mutex>', []),
+        (lambda x: '<iostream>' in x, 'Uses <iostream>', []),
         (lambda x: re.match(_NULLPTR_REGEX, x), 'Uses nullptr', []),
         (lambda x: re.match(_RETURN_NOT_OK_REGEX, x),
          'Use ARROW_RETURN_NOT_OK in header files', _paths('''\
          arrow/status.h
          test
          arrow/util/hash.h
-         arrow/python/util'''))
+         arrow/python/util''')),
+        (lambda x: re.match(_ASSIGN_OR_RAISE_REGEX, x),
+         'Use ARROW_ASSIGN_OR_RAISE in header files', _paths('''\
+         arrow/result_internal.h
+         test
+         '''))
+
     ]
 
     with open(path) as f:
@@ -77,8 +85,10 @@ EXCLUSIONS = _paths('''\
     arrow/visitor_inline.h
     gandiva/cache.h
     gandiva/jni
+    jni/
     test
-    internal''')
+    internal
+    _generated''')
 
 
 def lint_files():
@@ -95,9 +105,17 @@ def lint_files():
             if exclude:
                 continue
 
+            # Lint file name, except for pkgconfig templates
+            if not filename.endswith('.pc.in'):
+                if '-' in filename:
+                    why = ("Please user underscores, not hyphens, "
+                           "in source file names")
+                    yield full_path, why, 0, full_path
+
             # Only run on header files
             if filename.endswith('.h'):
-                yield from lint_file(full_path)
+                for _ in lint_file(full_path):
+                    yield _
 
 
 if __name__ == '__main__':

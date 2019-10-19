@@ -25,22 +25,23 @@
 #include <utility>
 #include <vector>
 
-#include "flatbuffers/flatbuffers.h"
+#include <flatbuffers/flatbuffers.h>
 
 #include "arrow/array.h"
 #include "arrow/buffer.h"
 #include "arrow/io/interfaces.h"
-#include "arrow/ipc/feather-internal.h"
-#include "arrow/ipc/feather_generated.h"
+#include "arrow/ipc/feather_internal.h"
 #include "arrow/ipc/util.h"  // IWYU pragma: keep
 #include "arrow/status.h"
 #include "arrow/table.h"  // IWYU pragma: keep
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/bit-util.h"
+#include "arrow/util/bit_util.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/logging.h"
 #include "arrow/visitor.h"
+
+#include "generated/feather_generated.h"
 
 namespace arrow {
 
@@ -313,7 +314,8 @@ class TableReader::TableReaderImpl {
   }
 
   Status GetDataType(const fbs::PrimitiveArray* values, fbs::TypeMetadata metadata_type,
-                     const void* metadata, std::shared_ptr<DataType>* out) {
+                     const void* metadata, std::shared_ptr<DataType>* out,
+                     std::shared_ptr<Array>* out_dictionary = nullptr) {
 #define PRIMITIVE_CASE(CAP_TYPE, FACTORY_FUNC) \
   case fbs::Type_##CAP_TYPE:                   \
     *out = FACTORY_FUNC();                     \
@@ -326,11 +328,10 @@ class TableReader::TableReaderImpl {
         std::shared_ptr<DataType> index_type;
         RETURN_NOT_OK(GetDataType(values, fbs::TypeMetadata_NONE, nullptr, &index_type));
 
-        std::shared_ptr<Array> levels;
         RETURN_NOT_OK(
-            LoadValues(meta->levels(), fbs::TypeMetadata_NONE, nullptr, &levels));
+            LoadValues(meta->levels(), fbs::TypeMetadata_NONE, nullptr, out_dictionary));
 
-        *out = std::make_shared<DictionaryType>(index_type, levels, meta->ordered());
+        *out = dictionary(index_type, (*out_dictionary)->type(), meta->ordered());
         break;
       }
       case fbs::TypeMetadata_TimestampMetadata: {
@@ -367,6 +368,8 @@ class TableReader::TableReaderImpl {
           PRIMITIVE_CASE(DOUBLE, float64);
           PRIMITIVE_CASE(UTF8, utf8);
           PRIMITIVE_CASE(BINARY, binary);
+          PRIMITIVE_CASE(LARGE_UTF8, large_utf8);
+          PRIMITIVE_CASE(LARGE_BINARY, large_binary);
           default:
             return Status::Invalid("Unrecognized type");
         }
@@ -385,7 +388,8 @@ class TableReader::TableReaderImpl {
   Status LoadValues(const fbs::PrimitiveArray* meta, fbs::TypeMetadata metadata_type,
                     const void* metadata, std::shared_ptr<Array>* out) {
     std::shared_ptr<DataType> type;
-    RETURN_NOT_OK(GetDataType(meta, metadata_type, metadata, &type));
+    std::shared_ptr<Array> dictionary;
+    RETURN_NOT_OK(GetDataType(meta, metadata_type, metadata, &type, &dictionary));
 
     std::vector<std::shared_ptr<Buffer>> buffers;
 
@@ -409,12 +413,17 @@ class TableReader::TableReaderImpl {
       int64_t offsets_size = GetOutputLength((meta->length() + 1) * sizeof(int32_t));
       buffers.push_back(SliceBuffer(buffer, offset, offsets_size));
       offset += offsets_size;
+    } else if (is_large_binary_like(type->id())) {
+      int64_t offsets_size = GetOutputLength((meta->length() + 1) * sizeof(int64_t));
+      buffers.push_back(SliceBuffer(buffer, offset, offsets_size));
+      offset += offsets_size;
     }
 
     buffers.push_back(SliceBuffer(buffer, offset, buffer->size() - offset));
 
     auto arr_data =
         ArrayData::Make(type, meta->length(), std::move(buffers), meta->null_count());
+    arr_data->dictionary = dictionary;
     *out = MakeArray(arr_data);
     return Status::OK();
   }
@@ -432,7 +441,7 @@ class TableReader::TableReaderImpl {
     return col_meta->name()->str();
   }
 
-  Status GetColumn(int i, std::shared_ptr<Column>* out) {
+  Status GetColumn(int i, std::shared_ptr<ChunkedArray>* out) {
     const fbs::Column* col_meta = metadata_->column(i);
 
     // auto user_meta = column->user_metadata();
@@ -441,18 +450,18 @@ class TableReader::TableReaderImpl {
     std::shared_ptr<Array> values;
     RETURN_NOT_OK(LoadValues(col_meta->values(), col_meta->metadata_type(),
                              col_meta->metadata(), &values));
-    out->reset(new Column(col_meta->name()->str(), values));
+    *out = std::make_shared<ChunkedArray>(values);
     return Status::OK();
   }
 
   Status Read(std::shared_ptr<Table>* out) {
     std::vector<std::shared_ptr<Field>> fields;
-    std::vector<std::shared_ptr<Column>> columns;
+    std::vector<std::shared_ptr<ChunkedArray>> columns;
     for (int i = 0; i < num_columns(); ++i) {
-      std::shared_ptr<Column> column;
+      std::shared_ptr<ChunkedArray> column;
       RETURN_NOT_OK(GetColumn(i, &column));
       columns.push_back(column);
-      fields.push_back(column->field());
+      fields.push_back(::arrow::field(GetColumnName(i), column->type()));
     }
     *out = Table::Make(schema(fields), columns);
     return Status::OK();
@@ -460,7 +469,7 @@ class TableReader::TableReaderImpl {
 
   Status Read(const std::vector<int>& indices, std::shared_ptr<Table>* out) {
     std::vector<std::shared_ptr<Field>> fields;
-    std::vector<std::shared_ptr<Column>> columns;
+    std::vector<std::shared_ptr<ChunkedArray>> columns;
     for (int i = 0; i < num_columns(); ++i) {
       bool found = false;
       for (auto j : indices) {
@@ -472,10 +481,10 @@ class TableReader::TableReaderImpl {
       if (!found) {
         continue;
       }
-      std::shared_ptr<Column> column;
+      std::shared_ptr<ChunkedArray> column;
       RETURN_NOT_OK(GetColumn(i, &column));
       columns.push_back(column);
-      fields.push_back(column->field());
+      fields.push_back(::arrow::field(GetColumnName(i), column->type()));
     }
     *out = Table::Make(schema(fields), columns);
     return Status::OK();
@@ -483,7 +492,7 @@ class TableReader::TableReaderImpl {
 
   Status Read(const std::vector<std::string>& names, std::shared_ptr<Table>* out) {
     std::vector<std::shared_ptr<Field>> fields;
-    std::vector<std::shared_ptr<Column>> columns;
+    std::vector<std::shared_ptr<ChunkedArray>> columns;
     for (int i = 0; i < num_columns(); ++i) {
       auto name = GetColumnName(i);
       bool found = false;
@@ -496,10 +505,10 @@ class TableReader::TableReaderImpl {
       if (!found) {
         continue;
       }
-      std::shared_ptr<Column> column;
+      std::shared_ptr<ChunkedArray> column;
       RETURN_NOT_OK(GetColumn(i, &column));
       columns.push_back(column);
-      fields.push_back(column->field());
+      fields.push_back(::arrow::field(name, column->type()));
     }
     *out = Table::Make(schema(fields), columns);
     return Status::OK();
@@ -537,7 +546,7 @@ int64_t TableReader::num_columns() const { return impl_->num_columns(); }
 
 std::string TableReader::GetColumnName(int i) const { return impl_->GetColumnName(i); }
 
-Status TableReader::GetColumn(int i, std::shared_ptr<Column>* out) {
+Status TableReader::GetColumn(int i, std::shared_ptr<ChunkedArray>* out) {
   return impl_->GetColumn(i, out);
 }
 
@@ -583,6 +592,10 @@ fbs::Type ToFlatbufferType(Type::type type) {
       return fbs::Type_UTF8;
     case Type::BINARY:
       return fbs::Type_BINARY;
+    case Type::LARGE_STRING:
+      return fbs::Type_LARGE_UTF8;
+    case Type::LARGE_BINARY:
+      return fbs::Type_LARGE_BINARY;
     case Type::DATE32:
       return fbs::Type_INT32;
     case Type::TIMESTAMP:
@@ -642,7 +655,8 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
   }
 
   Status LoadArrayMetadata(const Array& values, ArrayMetadata* meta) {
-    if (!(is_primitive(values.type_id()) || is_binary_like(values.type_id()))) {
+    if (!(is_primitive(values.type_id()) || is_binary_like(values.type_id()) ||
+          is_large_binary_like(values.type_id()))) {
       return Status::Invalid("Array is not primitive type: ", values.type()->ToString());
     }
 
@@ -654,6 +668,32 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
     meta->null_count = values.null_count();
     meta->total_bytes = 0;
 
+    return Status::OK();
+  }
+
+  template <typename ArrayType>
+  Status WriteBinaryArray(const ArrayType& values, ArrayMetadata* meta,
+                          const uint8_t** values_buffer, int64_t* values_bytes,
+                          int64_t* bytes_written) {
+    using offset_type = typename ArrayType::offset_type;
+
+    int64_t offset_bytes = sizeof(offset_type) * (values.length() + 1);
+
+    if (values.value_offsets()) {
+      *values_bytes = values.raw_value_offsets()[values.length()];
+
+      // Write the variable-length offsets
+      RETURN_NOT_OK(WritePadded(
+          stream_.get(), reinterpret_cast<const uint8_t*>(values.raw_value_offsets()),
+          offset_bytes, bytes_written));
+    } else {
+      RETURN_NOT_OK(WritePaddedBlank(stream_.get(), offset_bytes, bytes_written));
+    }
+    meta->total_bytes += *bytes_written;
+
+    if (values.value_data()) {
+      *values_buffer = values.value_data()->data();
+    }
     return Status::OK();
   }
 
@@ -685,26 +725,11 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
     const uint8_t* values_buffer = nullptr;
 
     if (is_binary_like(values.type_id())) {
-      const auto& bin_values = checked_cast<const BinaryArray&>(values);
-
-      int64_t offset_bytes = sizeof(int32_t) * (values.length() + 1);
-
-      if (bin_values.value_offsets()) {
-        values_bytes = bin_values.raw_value_offsets()[values.length()];
-
-        // Write the variable-length offsets
-        RETURN_NOT_OK(
-            WritePadded(stream_.get(),
-                        reinterpret_cast<const uint8_t*>(bin_values.raw_value_offsets()),
-                        offset_bytes, &bytes_written));
-      } else {
-        RETURN_NOT_OK(WritePaddedBlank(stream_.get(), offset_bytes, &bytes_written));
-      }
-      meta->total_bytes += bytes_written;
-
-      if (bin_values.value_data()) {
-        values_buffer = bin_values.value_data()->data();
-      }
+      RETURN_NOT_OK(WriteBinaryArray(checked_cast<const BinaryArray&>(values), meta,
+                                     &values_buffer, &values_bytes, &bytes_written));
+    } else if (is_large_binary_like(values.type_id())) {
+      RETURN_NOT_OK(WriteBinaryArray(checked_cast<const LargeBinaryArray&>(values), meta,
+                                     &values_buffer, &values_bytes, &bytes_written));
     } else {
       const auto& prim_values = checked_cast<const PrimitiveArray&>(values);
       const auto& fw_type = checked_cast<const FixedWidthType&>(*values.type());
@@ -758,6 +783,8 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
   VISIT_PRIMITIVE(DoubleArray)
   VISIT_PRIMITIVE(BinaryArray)
   VISIT_PRIMITIVE(StringArray)
+  VISIT_PRIMITIVE(LargeBinaryArray)
+  VISIT_PRIMITIVE(LargeStringArray)
 
 #undef VISIT_PRIMITIVE
 
@@ -772,8 +799,7 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
 
     ArrayMetadata levels_meta;
     std::shared_ptr<Array> sanitized_dictionary;
-    RETURN_NOT_OK(
-        SanitizeUnsupportedTypes(*dict_type.dictionary(), &sanitized_dictionary));
+    RETURN_NOT_OK(SanitizeUnsupportedTypes(*values.dictionary(), &sanitized_dictionary));
     RETURN_NOT_OK(WriteArray(*sanitized_dictionary, &levels_meta));
     current_column_->SetCategory(levels_meta, dict_type.ordered());
     return Status::OK();
@@ -812,9 +838,8 @@ class TableWriter::TableWriterImpl : public ArrayVisitor {
   Status Write(const Table& table) {
     for (int i = 0; i < table.num_columns(); ++i) {
       auto column = table.column(i);
-      current_column_ = metadata_.AddColumn(column->name());
-      auto chunked_array = column->data();
-      for (const auto chunk : chunked_array->chunks()) {
+      current_column_ = metadata_.AddColumn(table.field(i)->name());
+      for (const auto chunk : column->chunks()) {
         RETURN_NOT_OK(chunk->Accept(this));
       }
       RETURN_NOT_OK(current_column_->Finish());

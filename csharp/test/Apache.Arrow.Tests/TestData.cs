@@ -23,26 +23,34 @@ namespace Apache.Arrow.Tests
     {
         public static RecordBatch CreateSampleRecordBatch(int length)
         {
+            return CreateSampleRecordBatch(length, columnSetCount: 1);
+        }
+
+        public static RecordBatch CreateSampleRecordBatch(int length, int columnSetCount)
+        {
             Schema.Builder builder = new Schema.Builder();
-            builder.Field(CreateField(BooleanType.Default));
-            builder.Field(CreateField(UInt8Type.Default));
-            builder.Field(CreateField(Int8Type.Default));
-            builder.Field(CreateField(UInt16Type.Default));
-            builder.Field(CreateField(Int16Type.Default));
-            builder.Field(CreateField(UInt32Type.Default));
-            builder.Field(CreateField(Int32Type.Default));
-            builder.Field(CreateField(UInt64Type.Default));
-            builder.Field(CreateField(Int64Type.Default));
-            builder.Field(CreateField(FloatType.Default));
-            builder.Field(CreateField(DoubleType.Default));
-            //builder.Field(CreateField(new DecimalType(19, 2)));
-            //builder.Field(CreateField(HalfFloatType.Default));
-            //builder.Field(CreateField(StringType.Default));
-            //builder.Field(CreateField(Date32Type.Default));
-            //builder.Field(CreateField(Date64Type.Default));
-            //builder.Field(CreateField(Time32Type.Default));
-            //builder.Field(CreateField(Time64Type.Default));
-            //builder.Field(CreateField(TimestampType.Default));
+            for (int i = 0; i < columnSetCount; i++)
+            {
+                builder.Field(CreateField(BooleanType.Default, i));
+                builder.Field(CreateField(UInt8Type.Default, i));
+                builder.Field(CreateField(Int8Type.Default, i));
+                builder.Field(CreateField(UInt16Type.Default, i));
+                builder.Field(CreateField(Int16Type.Default, i));
+                builder.Field(CreateField(UInt32Type.Default, i));
+                builder.Field(CreateField(Int32Type.Default, i));
+                builder.Field(CreateField(UInt64Type.Default, i));
+                builder.Field(CreateField(Int64Type.Default, i));
+                builder.Field(CreateField(FloatType.Default, i));
+                builder.Field(CreateField(DoubleType.Default, i));
+                builder.Field(CreateField(Date32Type.Default, i));
+                builder.Field(CreateField(Date64Type.Default, i));
+                //builder.Field(CreateField(new DecimalType(19, 2)));
+                //builder.Field(CreateField(HalfFloatType.Default));
+                //builder.Field(CreateField(StringType.Default));
+                //builder.Field(CreateField(Time32Type.Default));
+                //builder.Field(CreateField(Time64Type.Default));
+                //builder.Field(CreateField(TimestampType.Default));
+            }
 
             Schema schema = builder.Build();
 
@@ -51,9 +59,9 @@ namespace Apache.Arrow.Tests
             return new RecordBatch(schema, arrays, length);
         }
 
-        private static Field CreateField(ArrowType type)
+        private static Field CreateField(ArrowType type, int iteration)
         {
-            return new Field(type.Name, type, nullable: false);
+            return new Field(type.Name + iteration, type, nullable: false);
         }
 
         private static IEnumerable<IArrowArray> CreateArrays(Schema schema, int length)
@@ -81,6 +89,8 @@ namespace Apache.Arrow.Tests
 
         private class ArrayBufferCreator :
             IArrowTypeVisitor<BooleanType>,
+            IArrowTypeVisitor<Date32Type>,
+            IArrowTypeVisitor<Date64Type>,
             IArrowTypeVisitor<Int8Type>,
             IArrowTypeVisitor<Int16Type>,
             IArrowTypeVisitor<Int32Type>,
@@ -151,6 +161,8 @@ namespace Apache.Arrow.Tests
             public void Visit(UInt64Type type) => CreateNumberArray<ulong>(type);
             public void Visit(FloatType type) => CreateNumberArray<float>(type);
             public void Visit(DoubleType type) => CreateNumberArray<double>(type);
+            public void Visit(Date32Type type) => CreateNumberArray<int>(type);
+            public void Visit(Date64Type type) => CreateNumberArray<long>(type);
 
             private void CreateNumberArray<T>(IArrowType type)
                 where T : struct

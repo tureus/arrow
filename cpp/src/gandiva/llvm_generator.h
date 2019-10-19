@@ -52,7 +52,13 @@ class GANDIVA_EXPORT LLVMGenerator {
 
   /// \brief Build the code for the expression trees for default mode. Each
   /// element in the vector represents an expression tree
-  Status Build(const ExpressionVector& exprs);
+  Status Build(const ExpressionVector& exprs, SelectionVector::Mode mode);
+
+  /// \brief Build the code for the expression trees for default mode. Each
+  /// element in the vector represents an expression tree
+  Status Build(const ExpressionVector& exprs) {
+    return Build(exprs, SelectionVector::Mode::MODE_NONE);
+  }
 
   /// \brief Execute the built expression against the provided arguments for
   /// default mode.
@@ -65,6 +71,7 @@ class GANDIVA_EXPORT LLVMGenerator {
                  const SelectionVector* selection_vector,
                  const ArrayDataVector& output_vector);
 
+  SelectionVector::Mode selection_vector_mode() { return selection_vector_mode_; }
   LLVMTypes* types() { return engine_->types(); }
   llvm::Module* module() { return engine_->module(); }
 
@@ -83,8 +90,8 @@ class GANDIVA_EXPORT LLVMGenerator {
    public:
     Visitor(LLVMGenerator* generator, llvm::Function* function,
             llvm::BasicBlock* entry_block, llvm::Value* arg_addrs,
-            llvm::Value* arg_local_bitmaps, llvm::Value* arg_context_ptr,
-            llvm::Value* loop_var);
+            llvm::Value* arg_addr_offsets, llvm::Value* arg_local_bitmaps,
+            llvm::Value* arg_context_ptr, llvm::Value* loop_var);
 
     void Visit(const VectorReadValidityDex& dex) override;
     void Visit(const VectorReadFixedLenValueDex& dex) override;
@@ -139,6 +146,9 @@ class GANDIVA_EXPORT LLVMGenerator {
     // Switch to the entry_block and get reference of the validity/value/offsets buffer
     llvm::Value* GetBufferReference(int idx, BufferType buffer_type, FieldPtr field);
 
+    // Get offset of the validity/value/offsets buffer
+    llvm::Value* GetBufferOffset(int idx, FieldPtr field);
+
     // Switch to the entry_block and get reference to the local bitmap.
     llvm::Value* GetLocalBitMapReference(int idx);
 
@@ -150,6 +160,7 @@ class GANDIVA_EXPORT LLVMGenerator {
     llvm::Function* function_;
     llvm::BasicBlock* entry_block_;
     llvm::Value* arg_addrs_;
+    llvm::Value* arg_addr_offsets_;
     llvm::Value* arg_local_bitmaps_;
     llvm::Value* arg_context_ptr_;
     llvm::Value* loop_var_;
@@ -172,6 +183,9 @@ class GANDIVA_EXPORT LLVMGenerator {
 
   /// Generate code to load the vector at specified index and cast it as offsets array.
   llvm::Value* GetOffsetsReference(llvm::Value* arg_addrs, int idx, FieldPtr field);
+
+  /// Generate code to load the vector at specified index and cast it as buffer pointer.
+  llvm::Value* GetDataBufferPtrReference(llvm::Value* arg_addrs, int idx, FieldPtr field);
 
   /// Generate code for the value array of one expression.
   Status CodeGenExprValue(DexPtr value_expr, FieldDescriptorPtr output, int suffix_idx,
@@ -226,6 +240,7 @@ class GANDIVA_EXPORT LLVMGenerator {
   std::vector<std::unique_ptr<CompiledExpr>> compiled_exprs_;
   FunctionRegistry function_registry_;
   Annotator annotator_;
+  SelectionVector::Mode selection_vector_mode_;
 
   // used for debug
   bool dump_ir_;

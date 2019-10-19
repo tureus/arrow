@@ -29,7 +29,7 @@
 
 #include "arrow/buffer.h"
 #include "arrow/csv/chunker.h"
-#include "arrow/csv/column-builder.h"
+#include "arrow/csv/column_builder.h"
 #include "arrow/csv/options.h"
 #include "arrow/csv/parser.h"
 #include "arrow/io/readahead.h"
@@ -38,8 +38,9 @@
 #include "arrow/type.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/macros.h"
-#include "arrow/util/task-group.h"
-#include "arrow/util/thread-pool.h"
+#include "arrow/util/task_group.h"
+#include "arrow/util/thread_pool.h"
+#include "arrow/util/utf8.h"
 
 namespace arrow {
 
@@ -75,6 +76,15 @@ class BaseTableReader : public csv::TableReader {
         convert_options_(convert_options) {}
 
  protected:
+  Status ReadFirstBlock() {
+    RETURN_NOT_OK(ReadNextBlock());
+    const uint8_t* data;
+    RETURN_NOT_OK(util::SkipUTF8BOM(cur_data_, cur_size_, &data));
+    cur_size_ -= data - cur_data_;
+    cur_data_ = data;
+    return Status::OK();
+  }
+
   // Read a next data block, stitch it to trailing data
   Status ReadNextBlock() {
     bool trailing_data = cur_size_ > 0;
@@ -135,51 +145,146 @@ class BaseTableReader : public csv::TableReader {
   // Read header and column names from current block, create column builders
   Status ProcessHeader() {
     DCHECK_GT(cur_size_, 0);
-    if (parse_options_.header_rows == 0) {
-      // TODO allow passing names and/or generate column numbers?
-      return Status::Invalid("header_rows == 0 needs explicit column names");
+
+    if (read_options_.skip_rows) {
+      // Skip initial rows (potentially invalid CSV data)
+      auto data = cur_data_;
+      auto num_skipped_rows = SkipRows(cur_data_, static_cast<uint32_t>(cur_size_),
+                                       read_options_.skip_rows, &data);
+      cur_size_ -= data - cur_data_;
+      cur_data_ = data;
+      if (num_skipped_rows < read_options_.skip_rows) {
+        return Status::Invalid(
+            "Could not skip initial ", read_options_.skip_rows,
+            " rows from CSV file, "
+            "either file is too short or header is larger than block size");
+      }
     }
 
-    BlockParser parser(pool_, parse_options_, num_cols_, parse_options_.header_rows);
+    if (read_options_.column_names.empty()) {
+      // Parse one row (either to read column names or to know the number of columns)
+      BlockParser parser(pool_, parse_options_, num_csv_cols_, 1);
+      uint32_t parsed_size = 0;
+      RETURN_NOT_OK(parser.Parse(reinterpret_cast<const char*>(cur_data_),
+                                 static_cast<uint32_t>(cur_size_), &parsed_size));
+      if (parser.num_rows() != 1) {
+        return Status::Invalid(
+            "Could not read first row from CSV file, either "
+            "file is too short or header is larger than block size");
+      }
+      if (parser.num_cols() == 0) {
+        return Status::Invalid("No columns in CSV file");
+      }
 
-    uint32_t parsed_size = 0;
-    RETURN_NOT_OK(parser.Parse(reinterpret_cast<const char*>(cur_data_),
-                               static_cast<uint32_t>(cur_size_), &parsed_size));
-    if (parser.num_rows() != parse_options_.header_rows) {
-      return Status::Invalid(
-          "Could not read header rows from CSV file, either "
-          "file is too short or header is larger than block size");
-    }
-    if (parser.num_cols() == 0) {
-      return Status::Invalid("No columns in CSV file");
-    }
-    num_cols_ = parser.num_cols();
-    DCHECK_GT(num_cols_, 0);
-
-    for (int32_t col_index = 0; col_index < num_cols_; ++col_index) {
-      auto visit = [&](const uint8_t* data, uint32_t size, bool quoted) -> Status {
-        DCHECK_EQ(column_names_.size(), static_cast<uint32_t>(col_index));
-        column_names_.emplace_back(reinterpret_cast<const char*>(data), size);
-        return Status::OK();
-      };
-      RETURN_NOT_OK(parser.VisitColumn(col_index, visit));
-      std::shared_ptr<ColumnBuilder> builder;
-      // Does the named column have a fixed type?
-      auto it = convert_options_.column_types.find(column_names_[col_index]);
-      if (it == convert_options_.column_types.end()) {
-        RETURN_NOT_OK(
-            ColumnBuilder::Make(col_index, convert_options_, task_group_, &builder));
+      if (read_options_.autogenerate_column_names) {
+        column_names_ = GenerateColumnNames(parser.num_cols());
       } else {
-        RETURN_NOT_OK(ColumnBuilder::Make(it->second, col_index, convert_options_,
-                                          task_group_, &builder));
+        // Read column names from header row
+        auto visit = [&](const uint8_t* data, uint32_t size, bool quoted) -> Status {
+          column_names_.emplace_back(reinterpret_cast<const char*>(data), size);
+          return Status::OK();
+        };
+        RETURN_NOT_OK(parser.VisitLastRow(visit));
+        DCHECK_EQ(static_cast<size_t>(parser.num_cols()), column_names_.size());
+        // Skip parsed header row
+        cur_data_ += parsed_size;
+        cur_size_ -= parsed_size;
+      }
+    } else {
+      column_names_ = read_options_.column_names;
+    }
+
+    num_csv_cols_ = static_cast<int32_t>(column_names_.size());
+    DCHECK_GT(num_csv_cols_, 0);
+
+    if (convert_options_.include_columns.empty()) {
+      return MakeColumnBuilders();
+    } else {
+      return MakeColumnBuilders(convert_options_.include_columns);
+    }
+  }
+
+  // Make column builders, assuming inclusion of all columns in CSV file order
+  Status MakeColumnBuilders() {
+    for (int32_t col_index = 0; col_index < num_csv_cols_; ++col_index) {
+      std::shared_ptr<ColumnBuilder> builder;
+      const auto& col_name = column_names_[col_index];
+
+      RETURN_NOT_OK(MakeCSVColumnBuilder(col_name, col_index, &builder));
+      column_builders_.push_back(builder);
+      builder_names_.push_back(col_name);
+    }
+    return Status::OK();
+  }
+
+  // Make column builders, assuming inclusion of columns in `include_columns` order
+  Status MakeColumnBuilders(const std::vector<std::string>& include_columns) {
+    // Compute indices of columns in the CSV file
+    std::unordered_map<std::string, int32_t> col_indices;
+    col_indices.reserve(column_names_.size());
+    for (int32_t i = 0; i < static_cast<int32_t>(column_names_.size()); ++i) {
+      col_indices.emplace(column_names_[i], i);
+    }
+
+    // For each column name in include_columns, build the corresponding ColumnBuilder
+    for (const auto& col_name : include_columns) {
+      std::shared_ptr<ColumnBuilder> builder;
+      auto it = col_indices.find(col_name);
+      if (it != col_indices.end()) {
+        auto col_index = it->second;
+        RETURN_NOT_OK(MakeCSVColumnBuilder(col_name, col_index, &builder));
+      } else {
+        // Column not in the CSV file
+        if (convert_options_.include_missing_columns) {
+          RETURN_NOT_OK(MakeNullColumnBuilder(col_name, &builder));
+        } else {
+          return Status::KeyError("Column '", col_name,
+                                  "' in include_columns "
+                                  "does not exist in CSV file");
+        }
       }
       column_builders_.push_back(builder);
+      builder_names_.push_back(col_name);
     }
-
-    // Skip parsed header rows
-    cur_data_ += parsed_size;
-    cur_size_ -= parsed_size;
     return Status::OK();
+  }
+
+  // Make a column builder for the given CSV column name and index
+  Status MakeCSVColumnBuilder(const std::string& col_name, int32_t col_index,
+                              std::shared_ptr<ColumnBuilder>* out) {
+    // Does the named column have a fixed type?
+    auto it = convert_options_.column_types.find(col_name);
+    if (it == convert_options_.column_types.end()) {
+      return ColumnBuilder::Make(pool_, col_index, convert_options_, task_group_, out);
+    } else {
+      return ColumnBuilder::Make(pool_, it->second, col_index, convert_options_,
+                                 task_group_, out);
+    }
+  }
+
+  // Make a column builder for a column of nulls
+  Status MakeNullColumnBuilder(const std::string& col_name,
+                               std::shared_ptr<ColumnBuilder>* out) {
+    std::shared_ptr<DataType> type;
+    // If the named column have a fixed type, use it, otherwise use null()
+    auto it = convert_options_.column_types.find(col_name);
+    if (it != convert_options_.column_types.end()) {
+      type = it->second;
+    } else {
+      type = null();
+    }
+    return ColumnBuilder::MakeNull(pool_, type, task_group_, out);
+  }
+
+  std::vector<std::string> GenerateColumnNames(int32_t num_cols) {
+    std::vector<std::string> res;
+    res.reserve(num_cols);
+    for (int32_t i = 0; i < num_cols; ++i) {
+      std::stringstream ss;
+      ss << "f" << i;
+      res.push_back(ss.str());
+    }
+    return res;
   }
 
   // Trigger conversion of parsed block data
@@ -191,18 +296,16 @@ class BaseTableReader : public csv::TableReader {
   }
 
   Status MakeTable(std::shared_ptr<Table>* out) {
-    DCHECK_GT(num_cols_, 0);
-    DCHECK_EQ(column_names_.size(), static_cast<uint32_t>(num_cols_));
-    DCHECK_EQ(column_builders_.size(), static_cast<uint32_t>(num_cols_));
+    DCHECK_EQ(column_builders_.size(), builder_names_.size());
 
     std::vector<std::shared_ptr<Field>> fields;
-    std::vector<std::shared_ptr<Column>> columns;
+    std::vector<std::shared_ptr<ChunkedArray>> columns;
 
-    for (int32_t i = 0; i < num_cols_; ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(builder_names_.size()); ++i) {
       std::shared_ptr<ChunkedArray> array;
       RETURN_NOT_OK(column_builders_[i]->Finish(&array));
-      columns.push_back(std::make_shared<Column>(column_names_[i], array));
-      fields.push_back(columns.back()->field());
+      fields.push_back(::arrow::field(builder_names_[i], array->type()));
+      columns.emplace_back(std::move(array));
     }
     *out = Table::Make(schema(fields), columns);
     return Status::OK();
@@ -213,12 +316,17 @@ class BaseTableReader : public csv::TableReader {
   ParseOptions parse_options_;
   ConvertOptions convert_options_;
 
-  int32_t num_cols_ = -1;
-  std::shared_ptr<ReadaheadSpooler> readahead_;
-  // Column names
+  // Number of columns in the CSV file
+  int32_t num_csv_cols_ = -1;
+  // Column names in the CSV file
   std::vector<std::string> column_names_;
-  std::shared_ptr<internal::TaskGroup> task_group_;
+  // Column builders for target Table (not necessarily in CSV file order)
   std::vector<std::shared_ptr<ColumnBuilder>> column_builders_;
+  // Names of columns, in same order as column_builders_
+  std::vector<std::string> builder_names_;
+
+  std::shared_ptr<ReadaheadSpooler> readahead_;
+  std::shared_ptr<internal::TaskGroup> task_group_;
 
   // Current block and data pointer
   std::shared_ptr<Buffer> cur_block_;
@@ -253,7 +361,7 @@ class SerialTableReader : public BaseTableReader {
     task_group_ = internal::TaskGroup::MakeSerial();
 
     // First block
-    RETURN_NOT_OK(ReadNextBlock());
+    RETURN_NOT_OK(ReadFirstBlock());
     if (eof_) {
       return Status::Invalid("Empty CSV file");
     }
@@ -261,7 +369,7 @@ class SerialTableReader : public BaseTableReader {
 
     static constexpr int32_t max_num_rows = std::numeric_limits<int32_t>::max();
     auto parser =
-        std::make_shared<BlockParser>(pool_, parse_options_, num_cols_, max_num_rows);
+        std::make_shared<BlockParser>(pool_, parse_options_, num_csv_cols_, max_num_rows);
     while (!eof_) {
       // Consume current block
       uint32_t parsed_size = 0;
@@ -329,7 +437,7 @@ class ThreadedTableReader : public BaseTableReader {
     Chunker chunker(parse_options_);
 
     // Get first block and process header serially
-    RETURN_NOT_OK(ReadNextBlock());
+    RETURN_NOT_OK(ReadFirstBlock());
     if (eof_) {
       return Status::Invalid("Empty CSV file");
     }
@@ -348,8 +456,8 @@ class ThreadedTableReader : public BaseTableReader {
 
         // "mutable" allows to modify captured by-copy chunk_buffer
         task_group_->Append([=]() mutable -> Status {
-          auto parser = std::make_shared<BlockParser>(pool_, parse_options_, num_cols_,
-                                                      max_num_rows);
+          auto parser = std::make_shared<BlockParser>(pool_, parse_options_,
+                                                      num_csv_cols_, max_num_rows);
           uint32_t parsed_size = 0;
           RETURN_NOT_OK(parser->Parse(reinterpret_cast<const char*>(chunk_data),
                                       chunk_size, &parsed_size));
@@ -381,8 +489,8 @@ class ThreadedTableReader : public BaseTableReader {
       for (auto& builder : column_builders_) {
         builder->SetTaskGroup(task_group_);
       }
-      auto parser =
-          std::make_shared<BlockParser>(pool_, parse_options_, num_cols_, max_num_rows);
+      auto parser = std::make_shared<BlockParser>(pool_, parse_options_, num_csv_cols_,
+                                                  max_num_rows);
       uint32_t parsed_size = 0;
       RETURN_NOT_OK(parser->ParseFinal(reinterpret_cast<const char*>(cur_data_),
                                        static_cast<uint32_t>(cur_size_), &parsed_size));

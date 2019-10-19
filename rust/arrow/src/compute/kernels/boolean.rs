@@ -20,12 +20,11 @@
 //! These kernels can leverage SIMD if available on your system.  Currently no runtime
 //! detection is provided, you should enable the specific SIMD intrinsics using
 //! `RUSTFLAGS="-C target-feature=+avx2"` for example.  See the documentation
-//! [here] (https://doc.rust-lang.org/stable/std/arch/) for more information.
+//! [here](https://doc.rust-lang.org/stable/core/arch/) for more information.
 
 use std::sync::Arc;
 
-use crate::array::{Array, BooleanArray};
-use crate::array_data::ArrayData;
+use crate::array::{Array, ArrayData, BooleanArray};
 use crate::buffer::Buffer;
 use crate::compute::util::apply_bin_op_to_option_bitmap;
 use crate::datatypes::DataType;

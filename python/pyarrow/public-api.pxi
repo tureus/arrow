@@ -16,9 +16,10 @@
 # under the License.
 
 from libcpp.memory cimport shared_ptr
-from pyarrow.includes.libarrow cimport (CArray, CColumn, CDataType, CField,
+from pyarrow.includes.libarrow cimport (CArray, CDataType, CField,
                                         CRecordBatch, CSchema,
-                                        CTable, CTensor)
+                                        CTable, CTensor,
+                                        CSparseCSRMatrix, CSparseCOOTensor)
 
 # You cannot assign something to a dereferenced pointer in Cython thus these
 # methods don't use Status to indicate a successful operation.
@@ -64,9 +65,17 @@ cdef api shared_ptr[CDataType] pyarrow_unwrap_data_type(
     return shared_ptr[CDataType]()
 
 
+# Workaround for Cython parsing bug
+# https://github.com/cython/cython/issues/2143
+ctypedef const CPyExtensionType* _CPyExtensionTypePtr
+
+
 cdef api object pyarrow_wrap_data_type(
         const shared_ptr[CDataType]& type):
-    cdef DataType out
+    cdef:
+        const CExtensionType* ext_type
+        const CPyExtensionType* cpy_ext_type
+        DataType out
 
     if type.get() == NULL:
         return None
@@ -75,16 +84,27 @@ cdef api object pyarrow_wrap_data_type(
         out = DictionaryType.__new__(DictionaryType)
     elif type.get().id() == _Type_LIST:
         out = ListType.__new__(ListType)
+    elif type.get().id() == _Type_LARGE_LIST:
+        out = LargeListType.__new__(LargeListType)
     elif type.get().id() == _Type_STRUCT:
         out = StructType.__new__(StructType)
     elif type.get().id() == _Type_UNION:
         out = UnionType.__new__(UnionType)
     elif type.get().id() == _Type_TIMESTAMP:
         out = TimestampType.__new__(TimestampType)
+    elif type.get().id() == _Type_DURATION:
+        out = DurationType.__new__(DurationType)
     elif type.get().id() == _Type_FIXED_SIZE_BINARY:
         out = FixedSizeBinaryType.__new__(FixedSizeBinaryType)
     elif type.get().id() == _Type_DECIMAL:
         out = Decimal128Type.__new__(Decimal128Type)
+    elif type.get().id() == _Type_EXTENSION:
+        ext_type = <const CExtensionType*> type.get()
+        cpy_ext_type = dynamic_cast[_CPyExtensionTypePtr](ext_type)
+        if cpy_ext_type != nullptr:
+            return cpy_ext_type.GetInstance()
+        else:
+            out = BaseExtensionType.__new__(BaseExtensionType)
     else:
         out = DataType.__new__(DataType)
 
@@ -99,7 +119,7 @@ cdef object pyarrow_wrap_metadata(
     if cmeta == nullptr:
         return None
 
-    result = OrderedDict()
+    result = ordered_dict()
     for i in range(cmeta.size()):
         result[cmeta.key(i)] = cmeta.value(i)
 
@@ -215,6 +235,7 @@ cdef api object pyarrow_wrap_scalar(const shared_ptr[CScalar]& sp_scalar):
     scalar.init(sp_scalar)
     return scalar
 
+
 cdef api bint pyarrow_is_tensor(object tensor):
     return isinstance(tensor, Tensor)
 
@@ -238,23 +259,50 @@ cdef api object pyarrow_wrap_tensor(
     return tensor
 
 
-cdef api bint pyarrow_is_column(object column):
-    return isinstance(column, Column)
+cdef api bint pyarrow_is_sparse_coo_tensor(object sparse_tensor):
+    return isinstance(sparse_tensor, SparseCOOTensor)
+
+cdef api shared_ptr[CSparseCOOTensor] pyarrow_unwrap_sparse_coo_tensor(
+        object sparse_tensor):
+    cdef SparseCOOTensor sten
+    if pyarrow_is_sparse_coo_tensor(sparse_tensor):
+        sten = <SparseCOOTensor>(sparse_tensor)
+        return sten.sp_sparse_tensor
+
+    return shared_ptr[CSparseCOOTensor]()
+
+cdef api object pyarrow_wrap_sparse_coo_tensor(
+        const shared_ptr[CSparseCOOTensor]& sp_sparse_tensor):
+    if sp_sparse_tensor.get() == NULL:
+        raise ValueError('SparseCOOTensor was NULL')
+
+    cdef SparseCOOTensor sparse_tensor = SparseCOOTensor.__new__(
+        SparseCOOTensor)
+    sparse_tensor.init(sp_sparse_tensor)
+    return sparse_tensor
 
 
-cdef api shared_ptr[CColumn] pyarrow_unwrap_column(object column):
-    cdef Column col
-    if pyarrow_is_column(column):
-        col = <Column>(column)
-        return col.sp_column
+cdef api bint pyarrow_is_sparse_csr_matrix(object sparse_tensor):
+    return isinstance(sparse_tensor, SparseCSRMatrix)
 
-    return shared_ptr[CColumn]()
+cdef api shared_ptr[CSparseCSRMatrix] pyarrow_unwrap_sparse_csr_matrix(
+        object sparse_tensor):
+    cdef SparseCSRMatrix sten
+    if pyarrow_is_sparse_csr_matrix(sparse_tensor):
+        sten = <SparseCSRMatrix>(sparse_tensor)
+        return sten.sp_sparse_tensor
 
+    return shared_ptr[CSparseCSRMatrix]()
 
-cdef api object pyarrow_wrap_column(const shared_ptr[CColumn]& ccolumn):
-    cdef Column column = Column.__new__(Column)
-    column.init(ccolumn)
-    return column
+cdef api object pyarrow_wrap_sparse_csr_matrix(
+        const shared_ptr[CSparseCSRMatrix]& sp_sparse_tensor):
+    if sp_sparse_tensor.get() == NULL:
+        raise ValueError('SparseCSRMatrix was NULL')
+
+    cdef SparseCSRMatrix sparse_tensor = SparseCSRMatrix.__new__(
+        SparseCSRMatrix)
+    sparse_tensor.init(sp_sparse_tensor)
+    return sparse_tensor
 
 
 cdef api bint pyarrow_is_table(object table):
