@@ -186,6 +186,42 @@ impl Field {
         &self.ident
     }
 
+    pub fn definition_levels(&self) -> usize {
+        match &self.ty {
+            Type::TypePath(_) => 0,
+            Type::Option(ref first_type) => match **first_type {
+                Type::TypePath(_) => 1,
+                Type::Option(_) => unimplemented!("nested options? that's weird"),
+                Type::Reference(_, ref second_type)
+                | Type::Vec(ref second_type)
+                | Type::Array(ref second_type) => match **second_type {
+                    Type::TypePath(_) => 1,
+                    _ => unimplemented!("a little too much nesting. bailing out."),
+                },
+            },
+            Type::Reference(_, ref first_type)
+            | Type::Vec(ref first_type)
+            | Type::Array(ref first_type) => match **first_type {
+                Type::TypePath(_) => 0, // TODO: Don't know if this is right
+                Type::Reference(_, ref second_type)
+                | Type::Vec(ref second_type)
+                | Type::Array(ref second_type)
+                | Type::Option(ref second_type) => match **second_type {
+                    Type::TypePath(_) => 1, // TODO: Don't know if this is right
+                    Type::Reference(_, ref third_type) => match **third_type {
+                        Type::TypePath(_) => 1, // TODO: Don't know if this is right
+                        _ => unimplemented!(
+                            "we don't do some more complex definition levels... yet!"
+                        ),
+                    },
+                    _ => unimplemented!(
+                        "we don't do more complex definition levels... yet!"
+                    ),
+                },
+            },
+        }
+    }
+
     fn option_into_vals(&self) -> proc_macro2::TokenStream {
         let field_name = &self.ident;
         let is_a_byte_buf = self.is_a_byte_buf;

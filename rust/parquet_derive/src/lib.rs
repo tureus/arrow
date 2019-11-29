@@ -172,6 +172,17 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
         })
         .collect();
 
+    let repetition_levels: Vec<_> = field_infos
+        .iter()
+        .map(|f| {
+            if f.definition_levels() == 0 {
+                quote! { parquet::basic::Repetition::REQUIRED }
+            } else {
+                quote! { parquet::basic::Repetition::OPTIONAL }
+            }
+        })
+        .collect();
+
     // field.ident()
     let field_identifiers: Vec<_> =
         field_infos.iter().map(|field| field.ident()).collect();
@@ -189,9 +200,10 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
                     parquet::schema::types::PrimitiveTypeBuilder::new(
                         stringify!(#field_identifiers),
                         #physical_types
-                    ).
-                    build().
-                    expect("schema builder failed on a type")
+                    )
+                    .with_repetition(#repetition_levels)
+                    .build()
+                    .expect("schema builder failed on a type")
                 )
             ),*
           ];

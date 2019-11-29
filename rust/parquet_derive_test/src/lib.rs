@@ -106,26 +106,65 @@ mod tests {
     }
 
     use crate::parquet::record::RecordSchema;
-    #[derive(ParquetRecordSchema)]
-    struct SimpleParquetRecord {
-        is_true: bool,
-    }
 
     #[test]
     fn test_parquet_derive_schema() {
+        #[derive(ParquetRecordSchema)]
+        #[allow(dead_code)]
+        struct ParquetRecord<'a> {
+            is_true: bool,
+            name: String,
+            str_name: &'a str,
+            age: usize,
+            age_f: f32,
+            age_ff: f64,
+            optional_name: Option<String>,
+        }
+
+        use crate::parquet::basic::Repetition;
         use crate::parquet::schema::types::{GroupTypeBuilder, PrimitiveTypeBuilder};
 
         use std::rc::Rc;
+
+        let mut schema_fields: Vec<_> = [
+            PrimitiveTypeBuilder::new("is_true", parquet::basic::Type::BOOLEAN)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("name", parquet::basic::Type::BYTE_ARRAY)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("str_name", parquet::basic::Type::BYTE_ARRAY)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("age", parquet::basic::Type::INT64)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("age_f", parquet::basic::Type::FLOAT)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("age_ff", parquet::basic::Type::DOUBLE)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("optional_name", parquet::basic::Type::BYTE_ARRAY)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .unwrap(),
+        ]
+        .into_iter()
+        .map(|x| Rc::new(x.clone()))
+        .collect();
         let group_type = GroupTypeBuilder::new("schema".into())
-            .with_fields(&mut vec![Rc::new(
-                PrimitiveTypeBuilder::new("is_true", parquet::basic::Type::BOOLEAN)
-                    .build()
-                    .expect("build type"),
-            )])
+            .with_fields(&mut schema_fields)
             .build()
             .unwrap();
 
-        assert_eq!(SimpleParquetRecord::schema(), group_type);
+        assert_eq!(ParquetRecord::schema(), group_type);
     }
 
     /// Returns file handle for a temp file in 'target' directory with a provided content
