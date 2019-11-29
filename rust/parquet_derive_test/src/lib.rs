@@ -105,6 +105,29 @@ mod tests {
         writer.close().unwrap();
     }
 
+    use crate::parquet::record::RecordSchema;
+    #[derive(ParquetRecordSchema)]
+    struct SimpleParquetRecord {
+        is_true: bool,
+    }
+
+    #[test]
+    fn test_parquet_derive_schema() {
+        use crate::parquet::schema::types::{GroupTypeBuilder, PrimitiveTypeBuilder};
+
+        use std::rc::Rc;
+        let group_type = GroupTypeBuilder::new("schema".into())
+            .with_fields(&mut vec![Rc::new(
+                PrimitiveTypeBuilder::new("is_true", parquet::basic::Type::BOOLEAN)
+                    .build()
+                    .expect("build type"),
+            )])
+            .build()
+            .unwrap();
+
+        assert_eq!(SimpleParquetRecord::schema(), group_type);
+    }
+
     /// Returns file handle for a temp file in 'target' directory with a provided content
     pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
         // build tmp path to a file in "target/debug/testdata"

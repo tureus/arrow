@@ -124,3 +124,83 @@ pub fn parquet_record_writer(input: proc_macro::TokenStream) -> proc_macro::Toke
     }
   }).into()
 }
+
+#[proc_macro_derive(ParquetRecordSchema)]
+pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input: DeriveInput = parse_macro_input!(input as DeriveInput);
+    let fields = match input.data {
+        Data::Struct(DataStruct { fields, .. }) => fields,
+        Data::Enum(_) => unimplemented!("don't support enum"),
+        Data::Union(_) => unimplemented!("don't support union"),
+    };
+
+    let field_infos: Vec<_> = fields
+        .iter()
+        .map(|f: &syn::Field| parquet_field::Field::from(f))
+        .collect();
+
+    //    panic!("field_infos: {:#?}", field_infos);
+
+    use parquet::basic::Type;
+    let physical_types: Vec<_> = field_infos
+        .iter()
+        .map(|field| match field.physical_type() {
+            Type::BOOLEAN => {
+                quote! { parquet::basic::Type::BOOLEAN }
+            }
+            Type::INT32 => {
+                quote! { parquet::basic::Type::INT32 }
+            }
+            Type::INT64 => {
+                quote! { parquet::basic::Type::INT64 }
+            }
+            Type::INT96 => {
+                quote! { parquet::basic::Type::INT96 }
+            }
+            Type::FLOAT => {
+                quote! { parquet::basic::Type::FLOAT }
+            }
+            Type::DOUBLE => {
+                quote! { parquet::basic::Type::DOUBLE }
+            }
+            Type::BYTE_ARRAY => {
+                quote! { parquet::basic::Type::BYTE_ARRAY }
+            }
+            Type::FIXED_LEN_BYTE_ARRAY => {
+                quote! { parquet::basic::Type::FIXED_LEN_BYTE_ARRAY }
+            }
+        })
+        .collect();
+
+    // field.ident()
+    let field_identifiers: Vec<_> =
+        field_infos.iter().map(|field| field.ident()).collect();
+
+    let derived_for = input.ident;
+    let generics = input.generics;
+
+    (quote! {
+      impl#generics RecordSchema for #derived_for#generics {
+        fn schema() -> parquet::schema::types::Type {
+
+          let mut fields = vec![
+            #(
+                std::rc::Rc::new(
+                    parquet::schema::types::PrimitiveTypeBuilder::new(
+                        stringify!(#field_identifiers),
+                        #physical_types
+                    ).
+                    build().
+                    expect("schema builder failed on a type")
+                )
+            ),*
+          ];
+
+          let group_type_builder = parquet::schema::types::GroupTypeBuilder::new("schema").with_fields(&mut fields);
+
+          group_type_builder.build().expect("could not build parquet schema")
+        }
+      }
+    })
+    .into()
+}

@@ -19,10 +19,12 @@
 
 mod api;
 pub mod reader;
+mod record_schema;
 mod record_writer;
 mod triplet;
 
 pub use self::{
     api::{List, ListAccessor, Map, MapAccessor, Row, RowAccessor},
+    record_schema::RecordSchema,
     record_writer::RecordWriter,
 };

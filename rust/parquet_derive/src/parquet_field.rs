@@ -154,7 +154,7 @@ impl Field {
                 if let #column_writer(ref mut typed) = column_writer {
                     typed.write_batch(&vals[..], Some(&definition_levels[..]), None)?;
                 } else {
-                    panic!("schema and struct disagree on type for {}", stringify!{#ident})
+                    panic!("schema and struct disagree on type for {}", stringify!{ #ident })
                 }
             }
         } else {
@@ -176,6 +176,14 @@ impl Field {
                 #write_batch_expr
             }
         }
+    }
+
+    pub fn physical_type(&self) -> parquet::basic::Type {
+        self.ty.physical_type()
+    }
+
+    pub fn ident(&self) -> &proc_macro2::Ident {
+        &self.ident
     }
 
     fn option_into_vals(&self) -> proc_macro2::TokenStream {
@@ -378,7 +386,7 @@ impl Type {
     ///   Vec<u8>  => BYTE_ARRAY
     ///   String => BYTE_ARRAY
     ///   i32 => INT32
-    fn physical_type(&self) -> parquet::basic::Type {
+    pub fn physical_type(&self) -> parquet::basic::Type {
         use parquet::basic::Type as BasicType;
 
         let last_part = self.last_part();
@@ -413,6 +421,10 @@ impl Type {
             f @ _ => unimplemented!("sorry, don't handle {} yet!", f),
         }
     }
+    //
+    //    fn schema_type(&self) -> parquet::schema::types::TypePtr {
+    //        match self {}
+    //    }
 
     /// Convert a parsed rust field AST in to a more easy to manipulate
     /// parquet_derive::Field
