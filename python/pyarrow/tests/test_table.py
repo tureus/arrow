@@ -44,6 +44,7 @@ def test_chunked_array_basics():
     assert all(isinstance(c, pa.lib.Int64Array) for c in data.chunks)
     assert all(isinstance(c, pa.lib.Int64Array) for c in data.iterchunks())
     assert len(data.chunks) == 3
+    assert data.nbytes == sum(c.nbytes for c in data.iterchunks())
     data.validate()
 
 
@@ -274,6 +275,7 @@ def test_recordbatch_basics():
     assert len(batch) == 5
     assert batch.num_rows == 5
     assert batch.num_columns == len(data)
+    assert batch.nbytes == 5 * 2 + 1 + 5 * 4 + 1
     pydict = batch.to_pydict()
     assert pydict == OrderedDict([
         ('c0', [0, 1, 2, 3, 4]),
@@ -367,6 +369,25 @@ def test_recordbatch_pickle():
     result = pickle.loads(pickle.dumps(batch))
     assert result.equals(batch)
     assert result.schema == schema
+
+
+def test_recordbatch_from_struct_array_invalid():
+    with pytest.raises(TypeError):
+        pa.RecordBatch.from_struct_array(pa.array(range(5)))
+
+
+def test_recordbatch_from_struct_array():
+    struct_array = pa.array(
+        [{"ints": 1}, {"floats": 1.0}],
+        type=pa.struct([("ints", pa.int32()), ("floats", pa.float32())]),
+    )
+    result = pa.RecordBatch.from_struct_array(struct_array)
+    assert result.equals(pa.RecordBatch.from_arrays(
+        [
+            pa.array([1, None], type=pa.int32()),
+            pa.array([None, 1.0], type=pa.float32()),
+        ], ["ints", "floats"]
+    ))
 
 
 def _table_like_slice_tests(factory):
@@ -493,8 +514,8 @@ def test_table_to_batches():
 
 def test_table_basics():
     data = [
-        pa.array(range(5)),
-        pa.array([-10, -5, 0, 5, 10])
+        pa.array(range(5), type='int64'),
+        pa.array([-10, -5, 0, 5, 10], type='int64')
     ]
     table = pa.table(data, names=('a', 'b'))
     table.validate()
@@ -502,6 +523,7 @@ def test_table_basics():
     assert table.num_rows == 5
     assert table.num_columns == 2
     assert table.shape == (5, 2)
+    assert table.nbytes == 2 * (5 * 8 + 1)
     pydict = table.to_pydict()
     assert pydict == OrderedDict([
         ('a', [0, 1, 2, 3, 4]),
@@ -1181,6 +1203,14 @@ def test_table_factory_function_args_pandas():
     schema = pa.schema([('a', pa.int32())])
     table = pa.table(pd.DataFrame({'a': [1, 2, 3]}), schema)
     assert table.column('a').type == pa.int32()
+
+
+def test_factory_functions_invalid_input():
+    with pytest.raises(TypeError, match="Expected pandas DataFrame, python"):
+        pa.table("invalid input")
+
+    with pytest.raises(TypeError, match="Expected pandas DataFrame"):
+        pa.record_batch("invalid input")
 
 
 def test_table_function_unicode_schema():

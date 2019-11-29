@@ -60,7 +60,6 @@ set(ARROW_THIRDPARTY_DEPENDENCIES
     Brotli
     BZip2
     c-ares
-    double-conversion
     gflags
     GLOG
     gRPC
@@ -73,7 +72,6 @@ set(ARROW_THIRDPARTY_DEPENDENCIES
     RapidJSON
     Snappy
     Thrift
-    uriparser
     ZLIB
     ZSTD)
 
@@ -87,7 +85,6 @@ endif()
 
 message(STATUS "Using ${ARROW_DEPENDENCY_SOURCE} approach to find dependencies")
 
-# TODO: double-conversion check fails for conda, it should not
 if(ARROW_DEPENDENCY_SOURCE STREQUAL "CONDA")
   if(MSVC)
     set(ARROW_PACKAGE_PREFIX "$ENV{CONDA_PREFIX}/Library")
@@ -152,8 +149,6 @@ macro(build_dependency DEPENDENCY_NAME)
     build_re2()
   elseif("${DEPENDENCY_NAME}" STREQUAL "Thrift")
     build_thrift()
-  elseif("${DEPENDENCY_NAME}" STREQUAL "uriparser")
-    build_uriparser()
   elseif("${DEPENDENCY_NAME}" STREQUAL "ZLIB")
     build_zlib()
   elseif("${DEPENDENCY_NAME}" STREQUAL "ZSTD")
@@ -212,7 +207,6 @@ endif()
 
 if(ARROW_FLIGHT)
   set(ARROW_WITH_GRPC ON)
-  set(ARROW_WITH_URIPARSER ON)
 endif()
 
 if(ARROW_JSON)
@@ -279,15 +273,6 @@ if(DEFINED ENV{ARROW_CARES_URL})
   set(CARES_SOURCE_URL "$ENV{ARROW_CARES_URL}")
 else()
   set(CARES_SOURCE_URL "https://c-ares.haxx.se/download/c-ares-${CARES_VERSION}.tar.gz")
-endif()
-
-if(DEFINED ENV{ARROW_DOUBLE_CONVERSION_URL})
-  set(DOUBLE_CONVERSION_SOURCE_URL "$ENV{ARROW_DOUBLE_CONVERSION_URL}")
-else()
-  set(
-    DOUBLE_CONVERSION_SOURCE_URL
-    "https://github.com/google/double-conversion/archive/${DOUBLE_CONVERSION_VERSION}.tar.gz"
-    )
 endif()
 
 if(DEFINED ENV{ARROW_GBENCHMARK_URL})
@@ -387,16 +372,6 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
   set(THRIFT_SOURCE_URL "$ENV{ARROW_THRIFT_URL}")
 else()
   set(THRIFT_SOURCE_URL "FROM-APACHE-MIRROR")
-endif()
-
-if(DEFINED ENV{ARROW_URIPARSER_URL})
-  set(URIPARSER_SOURCE_URL "$ENV{ARROW_URIPARSER_URL}")
-else()
-  set(
-    URIPARSER_SOURCE_URL
-
-    "https://github.com/uriparser/uriparser/archive/uriparser-${URIPARSER_VERSION}.tar.gz"
-    )
 endif()
 
 if(DEFINED ENV{ARROW_ZLIB_URL})
@@ -659,165 +634,6 @@ if(ARROW_BOOST_REQUIRED)
 endif()
 
 # ----------------------------------------------------------------------
-# Google double-conversion
-
-macro(build_double_conversion)
-  message(STATUS "Building double-conversion from source")
-  set(DOUBLE_CONVERSION_PREFIX
-      "${CMAKE_CURRENT_BINARY_DIR}/double-conversion_ep/src/double-conversion_ep")
-  set(DOUBLE_CONVERSION_LIB_DIR "lib")
-  set(double-conversion_INCLUDE_DIRS "${DOUBLE_CONVERSION_PREFIX}/include")
-  set(
-    DOUBLE_CONVERSION_STATIC_LIB
-    "${DOUBLE_CONVERSION_PREFIX}/${DOUBLE_CONVERSION_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}double-conversion${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    )
-
-  set(DOUBLE_CONVERSION_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS}
-                                   "-DCMAKE_INSTALL_PREFIX=${DOUBLE_CONVERSION_PREFIX}"
-                                   "-DCMAKE_INSTALL_LIBDIR=${DOUBLE_CONVERSION_LIB_DIR}")
-
-  externalproject_add(double-conversion_ep
-                      ${EP_LOG_OPTIONS}
-                      INSTALL_DIR ${DOUBLE_CONVERSION_PREFIX}
-                      URL ${DOUBLE_CONVERSION_SOURCE_URL}
-                      CMAKE_ARGS ${DOUBLE_CONVERSION_CMAKE_ARGS}
-                      BUILD_BYPRODUCTS "${DOUBLE_CONVERSION_STATIC_LIB}")
-
-  add_library(double-conversion STATIC IMPORTED)
-  set_target_properties(double-conversion
-                        PROPERTIES IMPORTED_LOCATION "${DOUBLE_CONVERSION_STATIC_LIB}")
-  add_dependencies(toolchain double-conversion_ep)
-  add_dependencies(double-conversion double-conversion_ep)
-  set(double-conversion_LIBRARIES double-conversion)
-endmacro()
-
-macro(double_conversion_config)
-  # Map the newer target to the old, simpler setting
-  if(TARGET double-conversion::double-conversion)
-    set(double-conversion_LIBRARIES double-conversion::double-conversion)
-    get_target_property(double-conversion_INCLUDE_DIRS
-                        double-conversion::double-conversion
-                        INTERFACE_INCLUDE_DIRECTORIES)
-  endif()
-endmacro()
-
-macro(double_conversion_compability)
-  check_cxx_source_compiles("
-#include <double-conversion/double-conversion.h>
-int main() {
-const int flags_ = double_conversion::StringToDoubleConverter::ALLOW_CASE_INSENSIBILITY;
-      }" DOUBLE_CONVERSION_HAS_CASE_INSENSIBILITY)
-endmacro()
-
-if(double-conversion_SOURCE STREQUAL "AUTO")
-  # Debian does not ship cmake configs for double-conversion
-  # TODO: Make upstream bug
-  find_package(double-conversion QUIET)
-  if(NOT double-conversion_FOUND)
-    find_package(DoubleConversion)
-  endif()
-  if(double-conversion_FOUND OR DoubleConversion_FOUND)
-    double_conversion_config()
-  else()
-    build_double_conversion()
-  endif()
-elseif(double-conversion_SOURCE STREQUAL "BUNDLED")
-  build_double_conversion()
-elseif(double-conversion_SOURCE STREQUAL "SYSTEM")
-  # Debian does not ship cmake configs for double-conversion
-  # TODO: Make upstream bug
-  find_package(double-conversion)
-  if(NOT double-conversion_FOUND)
-    find_package(DoubleConversion REQUIRED)
-  endif()
-
-  double_conversion_config()
-endif()
-# TODO: Don't use global includes but rather target_include_directories
-include_directories(SYSTEM ${double-conversion_INCLUDE_DIRS})
-
-double_conversion_compability()
-
-# ----------------------------------------------------------------------
-# uriparser library
-
-macro(build_uriparser)
-  message(STATUS "Building uriparser from source")
-  set(URIPARSER_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/uriparser_ep-install")
-  set(
-    URIPARSER_STATIC_LIB
-    "${URIPARSER_PREFIX}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}uriparser${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    )
-  set(URIPARSER_INCLUDE_DIRS "${URIPARSER_PREFIX}/include")
-
-  set(URIPARSER_CMAKE_ARGS
-      ${EP_COMMON_CMAKE_ARGS}
-      "-DURIPARSER_BUILD_DOCS=off"
-      "-DURIPARSER_BUILD_TESTS=off"
-      "-DURIPARSER_BUILD_TOOLS=off"
-      "-DURIPARSER_BUILD_WCHAR_T=off"
-      "-DBUILD_SHARED_LIBS=off"
-      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-      "-DCMAKE_INSTALL_LIBDIR=lib"
-      "-DCMAKE_POSITION_INDEPENDENT_CODE=on"
-      "-DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>")
-
-  if(MSVC AND ARROW_USE_STATIC_CRT)
-    if("${CMAKE_BUILD_TYPE}" STREQUAL "DEBUG")
-      list(APPEND URIPARSER_CMAKE_ARGS "-DURIPARSER_MSVC_RUNTIME=/MTd")
-    else()
-      list(APPEND URIPARSER_CMAKE_ARGS "-DURIPARSER_MSVC_RUNTIME=/MT")
-    endif()
-  endif()
-
-  externalproject_add(uriparser_ep
-                      URL ${URIPARSER_SOURCE_URL}
-                      CMAKE_ARGS ${URIPARSER_CMAKE_ARGS}
-                      BUILD_BYPRODUCTS ${URIPARSER_STATIC_LIB}
-                      INSTALL_DIR ${URIPARSER_PREFIX}
-                      ${EP_LOG_OPTIONS})
-
-  add_library(uriparser::uriparser STATIC IMPORTED)
-  # Work around https://gitlab.kitware.com/cmake/cmake/issues/15052
-  file(MAKE_DIRECTORY ${URIPARSER_INCLUDE_DIRS})
-  set_target_properties(uriparser::uriparser
-                        PROPERTIES IMPORTED_LOCATION ${URIPARSER_STATIC_LIB}
-                                   INTERFACE_INCLUDE_DIRECTORIES ${URIPARSER_INCLUDE_DIRS}
-                                   # URI_STATIC_BUILD required on Windows
-                                   INTERFACE_COMPILE_DEFINITIONS
-                                   "URI_STATIC_BUILD;URI_NO_UNICODE")
-
-  add_dependencies(toolchain uriparser_ep)
-  add_dependencies(uriparser::uriparser uriparser_ep)
-endmacro()
-
-if(ARROW_WITH_URIPARSER)
-  set(ARROW_URIPARSER_REQUIRED_VERSION "0.9.0")
-  if(uriparser_SOURCE STREQUAL "AUTO")
-    # Debian does not ship cmake configs for uriparser
-    find_package(uriparser ${ARROW_URIPARSER_REQUIRED_VERSION} QUIET)
-    if(NOT uriparser_FOUND)
-      find_package(uriparserAlt ${ARROW_URIPARSER_REQUIRED_VERSION})
-    endif()
-    if(NOT uriparser_FOUND AND NOT uriparserAlt_FOUND)
-      build_uriparser()
-    endif()
-  elseif(uriparser_SOURCE STREQUAL "BUNDLED")
-    build_uriparser()
-  elseif(uriparser_SOURCE STREQUAL "SYSTEM")
-    # Debian does not ship cmake configs for uriparser
-    find_package(uriparser ${ARROW_URIPARSER_REQUIRED_VERSION} QUIET)
-    if(NOT uriparser_FOUND)
-      find_package(uriparserAlt ${ARROW_URIPARSER_REQUIRED_VERSION} REQUIRED)
-    endif()
-  endif()
-
-  get_target_property(URIPARSER_INCLUDE_DIRS uriparser::uriparser
-                      INTERFACE_INCLUDE_DIRECTORIES)
-  include_directories(SYSTEM ${URIPARSER_INCLUDE_DIRS})
-endif()
-
-# ----------------------------------------------------------------------
 # Snappy
 
 macro(build_snappy)
@@ -946,32 +762,35 @@ if(ARROW_WITH_BROTLI)
   include_directories(SYSTEM ${BROTLI_INCLUDE_DIR})
 endif()
 
-set(ARROW_USE_OPENSSL OFF)
 if(PARQUET_REQUIRE_ENCRYPTION AND NOT ARROW_PARQUET)
   set(PARQUET_REQUIRE_ENCRYPTION OFF)
 endif()
 set(ARROW_OPENSSL_REQUIRED_VERSION "1.0.2")
 if(BREW_BIN AND NOT OPENSSL_ROOT_DIR)
-  execute_process(COMMAND ${BREW_BIN} --prefix "openssl"
-                  OUTPUT_VARIABLE OPENSSL_BREW_PREFIX
+  execute_process(COMMAND ${BREW_BIN} --prefix "openssl@1.1"
+                  OUTPUT_VARIABLE OPENSSL11_BREW_PREFIX
                   OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(OPENSSL_BREW_PREFIX)
-    set(OPENSSL_ROOT_DIR ${OPENSSL_BREW_PREFIX})
+  if(OPENSSL11_BREW_PREFIX)
+    set(OPENSSL_ROOT_DIR ${OPENSSL11_BREW_PREFIX})
+  else()
+    execute_process(COMMAND ${BREW_BIN} --prefix "openssl"
+                    OUTPUT_VARIABLE OPENSSL_BREW_PREFIX
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(OPENSSL_BREW_PREFIX)
+      set(OPENSSL_ROOT_DIR ${OPENSSL_BREW_PREFIX})
+    endif()
   endif()
 endif()
+
+set(ARROW_USE_OPENSSL OFF)
 if(PARQUET_REQUIRE_ENCRYPTION OR ARROW_FLIGHT OR ARROW_S3)
   # This must work
   find_package(OpenSSL ${ARROW_OPENSSL_REQUIRED_VERSION} REQUIRED)
   set(ARROW_USE_OPENSSL ON)
-elseif(ARROW_PARQUET)
-  # Enable Parquet encryption if OpenSSL is there, but don't fail if it's not
-  find_package(OpenSSL ${ARROW_OPENSSL_REQUIRED_VERSION} QUIET)
-  if(OPENSSL_FOUND)
-    set(ARROW_USE_OPENSSL ON)
-  endif()
 endif()
 
 if(ARROW_USE_OPENSSL)
+  message(STATUS "Found OpenSSL Crypto Library: ${OPENSSL_CRYPTO_LIBRARY}")
   message(STATUS "Building with OpenSSL (Version: ${OPENSSL_VERSION}) support")
 
   # OpenSSL::SSL and OpenSSL::Crypto were not added to
@@ -1310,10 +1129,15 @@ macro(build_protobuf)
       "--prefix=${PROTOBUF_PREFIX}"
       "CFLAGS=${EP_C_FLAGS}"
       "CXXFLAGS=${EP_CXX_FLAGS}")
+  set(PROTOBUF_BUILD_COMMAND ${MAKE} ${MAKE_BUILD_ARGS})
+  if(CMAKE_OSX_SYSROOT)
+    list(APPEND PROTOBUF_CONFIGURE_ARGS "SDKROOT=${CMAKE_OSX_SYSROOT}")
+    list(APPEND PROTOBUF_BUILD_COMMAND "SDKROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
 
   externalproject_add(protobuf_ep
                       CONFIGURE_COMMAND "./configure" ${PROTOBUF_CONFIGURE_ARGS}
-                      BUILD_COMMAND ${MAKE} ${MAKE_BUILD_ARGS}
+                      BUILD_COMMAND ${PROTOBUF_BUILD_COMMAND}
                       BUILD_IN_SOURCE 1
                       URL ${PROTOBUF_SOURCE_URL}
                       BUILD_BYPRODUCTS "${PROTOBUF_STATIC_LIB}" "${PROTOBUF_COMPILER}"
@@ -1341,7 +1165,8 @@ endmacro()
 
 if(ARROW_WITH_PROTOBUF)
   if(ARROW_WITH_GRPC)
-    set(ARROW_PROTOBUF_REQUIRED_VERSION "3.6.0")
+    # gRPC 1.21.0 or later require Protobuf 3.7.0 or later.
+    set(ARROW_PROTOBUF_REQUIRED_VERSION "3.7.0")
   else()
     set(ARROW_PROTOBUF_REQUIRED_VERSION "2.6.1")
   endif()
@@ -1414,25 +1239,32 @@ if(ARROW_JEMALLOC)
       "${CMAKE_CURRENT_BINARY_DIR}/jemalloc_ep-prefix/src/jemalloc_ep/dist/")
   set(JEMALLOC_STATIC_LIB
       "${JEMALLOC_PREFIX}/lib/libjemalloc_pic${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(JEMALLOC_CONFIGURE_COMMAND ./configure "AR=${CMAKE_AR}" "CC=${CMAKE_C_COMPILER}")
+  if(CMAKE_OSX_SYSROOT)
+    list(APPEND JEMALLOC_CONFIGURE_COMMAND "SDKROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
+  list(APPEND JEMALLOC_CONFIGURE_COMMAND
+              "--prefix=${JEMALLOC_PREFIX}"
+              "--with-jemalloc-prefix=je_arrow_"
+              "--with-private-namespace=je_arrow_private_"
+              "--without-export"
+              # Don't override operator new()
+              "--disable-cxx" "--disable-libdl"
+              # See https://github.com/jemalloc/jemalloc/issues/1237
+              "--disable-initial-exec-tls" ${EP_LOG_OPTIONS})
+  set(JEMALLOC_BUILD_COMMAND ${MAKE} ${MAKE_BUILD_ARGS})
+  if(CMAKE_OSX_SYSROOT)
+    list(APPEND JEMALLOC_BUILD_COMMAND "SDKROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
   externalproject_add(
     jemalloc_ep
     URL ${JEMALLOC_SOURCE_URL}
     PATCH_COMMAND
       touch doc/jemalloc.3 doc/jemalloc.html
       # The prefix "je_arrow_" must be kept in sync with the value in memory_pool.cc
-    CONFIGURE_COMMAND ./configure
-                      "AR=${CMAKE_AR}"
-                      "CC=${CMAKE_C_COMPILER}"
-                      "--prefix=${JEMALLOC_PREFIX}"
-                      "--with-jemalloc-prefix=je_arrow_"
-                      "--with-private-namespace=je_arrow_private_"
-                      "--without-export"
-                      # Don't override operator new()
-                      "--disable-cxx" "--disable-libdl"
-                      # See https://github.com/jemalloc/jemalloc/issues/1237
-                      "--disable-initial-exec-tls" ${EP_LOG_OPTIONS}
+    CONFIGURE_COMMAND ${JEMALLOC_CONFIGURE_COMMAND}
     BUILD_IN_SOURCE 1
-    BUILD_COMMAND ${MAKE} ${MAKE_BUILD_ARGS}
+    BUILD_COMMAND ${JEMALLOC_BUILD_COMMAND}
     BUILD_BYPRODUCTS "${JEMALLOC_STATIC_LIB}"
     INSTALL_COMMAND ${MAKE} install)
 
@@ -1653,8 +1485,8 @@ if(ARROW_BUILD_TESTS OR ARROW_BUILD_BENCHMARKS OR ARROW_BUILD_INTEGRATION)
     #     set(CMAKE_REQUIRED_LIBRARIES)
   endif()
 
-  # TODO: Don't use global includes but rather target_include_directories
   get_target_property(GTEST_INCLUDE_DIR GTest::GTest INTERFACE_INCLUDE_DIRECTORIES)
+  # TODO: Don't use global includes but rather target_include_directories
   include_directories(SYSTEM ${GTEST_INCLUDE_DIR})
 endif()
 
@@ -1668,7 +1500,11 @@ macro(build_benchmark)
     set(GBENCHMARK_CMAKE_CXX_FLAGS "${EP_CXX_FLAGS} -std=c++11")
   endif()
 
-  if(APPLE)
+  if(APPLE
+     AND (CMAKE_CXX_COMPILER_ID
+          STREQUAL
+          "AppleClang"
+          OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     set(GBENCHMARK_CMAKE_CXX_FLAGS "${GBENCHMARK_CMAKE_CXX_FLAGS} -stdlib=libc++")
   endif()
 
@@ -2297,15 +2133,36 @@ macro(build_orc)
   set(ORC_STATIC_LIB
       "${ORC_PREFIX}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}orc${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
-  if("${COMPILER_FAMILY}" STREQUAL "clang")
-    if("${COMPILER_VERSION}" VERSION_EQUAL "4.0")
-      # conda OSX builds uses clang 4.0.1 and orc_ep fails to build unless
-      # disabling the following errors
-      set(ORC_CMAKE_CXX_FLAGS " -Wno-error=weak-vtables -Wno-error=undef ")
-    endif()
-    if("${COMPILER_VERSION}" VERSION_GREATER "4.0")
-      set(ORC_CMAKE_CXX_FLAGS " -Wno-zero-as-null-pointer-constant \
--Wno-inconsistent-missing-destructor-override -Wno-error=undef ")
+  set(ORC_CMAKE_CXX_FLAGS)
+  if((CMAKE_CXX_COMPILER_ID
+      STREQUAL
+      "AppleClang"
+      AND CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL "9")
+     OR (CMAKE_CXX_COMPILER_ID
+         STREQUAL
+         "Clang"
+         AND CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL "4.0"))
+    # conda OSX builds uses clang 4.0.1 and orc_ep fails to build unless
+    # disabling the following errors
+    set(ORC_CMAKE_CXX_FLAGS "${ORC_CMAKE_CXX_FLAGS} -Wno-error=weak-vtables")
+    set(ORC_CMAKE_CXX_FLAGS "${ORC_CMAKE_CXX_FLAGS} -Wno-error=undef")
+  elseif((CMAKE_CXX_COMPILER_ID
+          STREQUAL
+          "AppleClang"
+          AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "9")
+         OR (CMAKE_CXX_COMPILER_ID
+             STREQUAL
+             "Clang"
+             AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "4.0"))
+    set(ORC_CMAKE_CXX_FLAGS "${ORC_CMAKE_CXX_FLAGS} -Wno-zero-as-null-pointer-constant")
+    set(ORC_CMAKE_CXX_FLAGS
+        "${ORC_CMAKE_CXX_FLAGS} -Wno-inconsistent-missing-destructor-override")
+    set(ORC_CMAKE_CXX_FLAGS "${ORC_CMAKE_CXX_FLAGS} -Wno-error=undef")
+  endif()
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
+     OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(Protobuf_VERSION VERSION_GREATER_EQUAL "3.9.0")
+      set(ORC_CMAKE_CXX_FLAGS "${ORC_CMAKE_CXX_FLAGS} -Wno-comma")
     endif()
   endif()
 

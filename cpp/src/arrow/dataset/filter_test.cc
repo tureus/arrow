@@ -46,6 +46,8 @@ using string_literals::operator"" _;
 using internal::checked_cast;
 using internal::checked_pointer_cast;
 
+using E = TestExpression;
+
 class ExpressionsTest : public ::testing::Test {
  public:
   void AssertSimplifiesTo(const Expression& expr, const Expression& given,
@@ -58,31 +60,45 @@ class ExpressionsTest : public ::testing::Test {
     EXPECT_TRUE(given_type->Equals(boolean()));
 
     auto simplified = expr.Assume(given);
-    if (!simplified->Equals(expected)) {
-      FAIL() << "  simplification of: " << expr.ToString() << std::endl
-             << "              given: " << given.ToString() << std::endl
-             << "           expected: " << expected.ToString() << std::endl
-             << "                was: " << simplified->ToString();
-    }
+    ASSERT_EQ(E{simplified}, E{expected})
+        << "  simplification of: " << expr.ToString() << std::endl
+        << "              given: " << given.ToString() << std::endl;
   }
 
-  std::shared_ptr<Schema> schema_ =
-      schema({field("a", int32()), field("b", int32()), field("f", float64())});
+  void AssertSimplifiesTo(const Expression& expr, const Expression& given,
+                          const ExpressionPtr& expected) {
+    AssertSimplifiesTo(expr, given, *expected);
+  }
+
+  std::shared_ptr<Schema> schema_ = schema({field("a", int32()), field("b", int32()),
+                                            field("f", float64()), field("s", utf8())});
   std::shared_ptr<ScalarExpression> always = scalar(true);
   std::shared_ptr<ScalarExpression> never = scalar(false);
 };
 
-TEST_F(ExpressionsTest, Equality) {
-  ASSERT_TRUE("a"_.Equals("a"_));
-  ASSERT_FALSE("a"_.Equals("b"_));
+TEST_F(ExpressionsTest, StringRepresentation) {
+  ASSERT_EQ("a"_.ToString(), "a");
+  ASSERT_EQ(("a"_ > int32_t(3)).ToString(), "(a > 3:int32)");
+  ASSERT_EQ(("a"_ > int32_t(3) and "a"_ < int32_t(4)).ToString(),
+            "((a > 3:int32) and (a < 4:int32))");
+  ASSERT_EQ(("f"_ > double(4)).ToString(), "(f > 4:double)");
+}
 
-  ASSERT_TRUE(("b"_ == 3).Equals("b"_ == 3));
-  ASSERT_FALSE(("b"_ == 3).Equals("b"_ < 3));
-  ASSERT_FALSE(("b"_ == 3).Equals("b"_));
+TEST_F(ExpressionsTest, Equality) {
+  ASSERT_EQ(E{"a"_}, E{"a"_});
+  ASSERT_NE(E{"a"_}, E{"b"_});
+
+  ASSERT_EQ(E{"b"_ == 3}, E{"b"_ == 3});
+  ASSERT_NE(E{"b"_ == 3}, E{"b"_ < 3});
+  ASSERT_NE(E{"b"_ == 3}, E{"b"_});
 
   // ordering matters
-  ASSERT_TRUE(("b"_ > 2 and "b"_ < 3).Equals("b"_ > 2 and "b"_ < 3));
-  ASSERT_FALSE(("b"_ > 2 and "b"_ < 3).Equals("b"_ < 3 and "b"_ > 2));
+  ASSERT_EQ(E{"b"_ == 3}, E{"b"_ == 3});
+  ASSERT_NE(E{"b"_ == 3}, E{"b"_ < 3});
+  ASSERT_NE(E{"b"_ == 3}, E{"b"_});
+
+  ASSERT_EQ(E("b"_ > 2 and "b"_ < 3), E("b"_ > 2 and "b"_ < 3));
+  ASSERT_NE(E("b"_ > 2 and "b"_ < 3), E("b"_ < 3 and "b"_ > 2));
 }
 
 TEST_F(ExpressionsTest, SimplificationOfCompoundQuery) {
@@ -100,6 +116,12 @@ TEST_F(ExpressionsTest, SimplificationOfCompoundQuery) {
   AssertSimplifiesTo("b"_ == 4, "a"_ == 0, "b"_ == 4);
 
   AssertSimplifiesTo("a"_ == 3 or "b"_ == 4, "a"_ == 0, "b"_ == 4);
+
+  auto set_123 = ArrayFromJSON(int32(), R"([1, 2, 3])");
+  AssertSimplifiesTo("a"_ == 3 and "b"_.In(set_123), "b"_ == 3, "a"_ == 3);
+  AssertSimplifiesTo("a"_ == 3 and "b"_.In(set_123), "b"_ == 0, *never);
+
+  AssertSimplifiesTo("a"_ == 0 or not"b"_.IsValid(), "b"_ == 3, "a"_ == 0);
 }
 
 TEST_F(ExpressionsTest, SimplificationAgainstCompoundCondition) {
@@ -124,7 +146,7 @@ TEST_F(ExpressionsTest, SimplificationToNull) {
 
 class FilterTest : public ::testing::Test {
  public:
-  FilterTest() { evaluator_ = std::make_shared<TreeEvaluator>(&ctx_); }
+  FilterTest() { evaluator_ = std::make_shared<TreeEvaluator>(default_memory_pool()); }
 
   Result<Datum> DoFilter(const Expression& expr,
                          std::vector<std::shared_ptr<Field>> fields,
@@ -132,23 +154,24 @@ class FilterTest : public ::testing::Test {
                          std::shared_ptr<BooleanArray>* expected_mask = nullptr) {
     // expected filter result is in the "in" field
     fields.push_back(field("in", boolean()));
-
-    auto batch_array = ArrayFromJSON(struct_(std::move(fields)), std::move(batch_json));
-    std::shared_ptr<RecordBatch> batch;
-    RETURN_NOT_OK(RecordBatch::FromStructArray(batch_array, &batch));
-
+    auto batch = RecordBatchFromJSON(schema(fields), batch_json);
     if (expected_mask) {
       *expected_mask = checked_pointer_cast<BooleanArray>(batch->GetColumnByName("in"));
     }
 
-    ASSERT_OK_AND_ASSIGN(auto expr_type, expr.Validate(*batch->schema()));
+    ARROW_ASSIGN_OR_RAISE(auto expr_type, expr.Validate(*batch->schema()));
     EXPECT_TRUE(expr_type->Equals(boolean()));
 
     return evaluator_->Evaluate(expr, *batch);
   }
 
+  void AssertFilter(const ExpressionPtr& expr, std::vector<std::shared_ptr<Field>> fields,
+                    const std::string& batch_json) {
+    AssertFilter(*expr, std::move(fields), batch_json);
+  }
+
   void AssertFilter(const Expression& expr, std::vector<std::shared_ptr<Field>> fields,
-                    std::string batch_json) {
+                    const std::string& batch_json) {
     std::shared_ptr<BooleanArray> expected_mask;
     auto mask_res =
         DoFilter(expr, std::move(fields), std::move(batch_json), &expected_mask);
@@ -179,14 +202,13 @@ class FilterTest : public ::testing::Test {
     ASSERT_ARRAYS_EQUAL(*expected_mask, BooleanArray(expected_mask->length(), values));
   }
 
-  arrow::compute::FunctionContext ctx_;
   std::shared_ptr<ExpressionEvaluator> evaluator_;
 };
 
 TEST_F(FilterTest, Trivial) {
   // Note that we should expect these trivial expressions will never be evaluated against
   // record batches; since they're trivial, evaluation is not necessary.
-  AssertFilter(*scalar(true), {field("a", int32()), field("b", float64())}, R"([
+  AssertFilter(scalar(true), {field("a", int32()), field("b", float64())}, R"([
       {"a": 0, "b": -0.1, "in": 1},
       {"a": 0, "b":  0.3, "in": 1},
       {"a": 1, "b":  0.2, "in": 1},
@@ -196,7 +218,7 @@ TEST_F(FilterTest, Trivial) {
       {"a": 0, "b":  1.0, "in": 1}
   ])");
 
-  AssertFilter(*scalar(false), {field("a", int32()), field("b", float64())}, R"([
+  AssertFilter(scalar(false), {field("a", int32()), field("b", float64())}, R"([
       {"a": 0, "b": -0.1, "in": 0},
       {"a": 0, "b":  0.3, "in": 0},
       {"a": 1, "b":  0.2, "in": 0},
@@ -237,27 +259,121 @@ TEST_F(FilterTest, Basics) {
       {"a": 1, "b":  0.2, "in": 1},
       {"a": 2, "b": -0.1, "in": 0},
       {"a": 0, "b":  0.1, "in": 0},
-      {"a": 0, "b": null, "in": null},
+      {"a": 0, "b": null, "in": 0},
       {"a": 0, "b":  1.0, "in": 0}
+  ])");
+}
+
+TEST_F(FilterTest, InExpression) {
+  auto hello_world = ArrayFromJSON(utf8(), R"(["hello", "world"])");
+
+  AssertFilter("s"_.In(hello_world), {field("s", utf8())}, R"([
+      {"s": "hello", "in": 1},
+      {"s": "world", "in": 1},
+      {"s": "",      "in": 0},
+      {"s": null,    "in": null},
+      {"s": "foo",   "in": 0},
+      {"s": "hello", "in": 1},
+      {"s": "bar",   "in": 0}
+  ])");
+}
+
+TEST_F(FilterTest, IsValidExpression) {
+  AssertFilter("s"_.IsValid(), {field("s", utf8())}, R"([
+      {"s": "hello", "in": 1},
+      {"s": null,    "in": 0},
+      {"s": "",      "in": 1},
+      {"s": null,    "in": 0},
+      {"s": "foo",   "in": 1},
+      {"s": "hello", "in": 1},
+      {"s": null,    "in": 0}
+  ])");
+}
+
+TEST_F(FilterTest, Cast) {
+  ASSERT_RAISES(TypeError, ("a"_ == double(1.0)).Validate(Schema({field("a", int32())})));
+
+  AssertFilter("a"_.CastTo(float64()) == double(1.0),
+               {field("a", int32()), field("b", float64())}, R"([
+      {"a": 0, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.3, "in": 0},
+      {"a": 1, "b":  0.2, "in": 1},
+      {"a": 2, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.1, "in": 0},
+      {"a": 0, "b": null, "in": 0},
+      {"a": 1, "b":  1.0, "in": 1}
+  ])");
+
+  AssertFilter("a"_ == scalar(0.6)->CastLike("a"_),
+               {field("a", int32()), field("b", float64())}, R"([
+      {"a": 0, "b": -0.1, "in": 1},
+      {"a": 0, "b":  0.3, "in": 1},
+      {"a": 1, "b":  0.2, "in": 0},
+      {"a": 2, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.1, "in": 1},
+      {"a": 0, "b": null, "in": 1},
+      {"a": 1, "b":  1.0, "in": 0}
+  ])");
+
+  AssertFilter("a"_.CastLike("b"_) == "b"_, {field("a", int32()), field("b", float64())},
+               R"([
+      {"a": 0, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.0, "in": 1},
+      {"a": 1, "b":  1.0, "in": 1},
+      {"a": 2, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.1, "in": 0},
+      {"a": 2, "b": null, "in": null},
+      {"a": 1, "b":  1.0, "in": 1}
+  ])");
+}
+
+TEST_F(ExpressionsTest, ImplicitCast) {
+  ASSERT_OK_AND_ASSIGN(auto filter,
+                       InsertImplicitCasts("a"_ == 0.0, Schema({field("a", int32())})));
+  ASSERT_EQ(E{filter}, E{"a"_ == scalar(0.0)->CastTo(int32())});
+
+  auto ns = timestamp(TimeUnit::NANO);
+  ASSERT_OK_AND_ASSIGN(filter,
+                       InsertImplicitCasts("a"_ == "1990", Schema({field("a", ns)})));
+  ASSERT_EQ(E{filter}, E{"a"_ == scalar("1990")->CastTo(ns)});
+
+  ASSERT_OK_AND_ASSIGN(
+      filter, InsertImplicitCasts("a"_ == "1990" and "b"_ == "3",
+                                  Schema({field("a", ns), field("b", int32())})));
+  ASSERT_EQ(E{filter}, E{"a"_ == scalar("1990")->CastTo(ns) and
+                         "b"_ == scalar("3")->CastTo(int32())});
+}
+
+TEST_F(FilterTest, ImplicitCast) {
+  ASSERT_OK_AND_ASSIGN(auto filter,
+                       InsertImplicitCasts("a"_ >= "1", Schema({field("a", int32())})));
+
+  AssertFilter(*filter, {field("a", int32()), field("b", float64())},
+               R"([
+      {"a": 0, "b": -0.1, "in": 0},
+      {"a": 0, "b":  0.0, "in": 0},
+      {"a": 1, "b":  1.0, "in": 1},
+      {"a": 2, "b": -0.1, "in": 1},
+      {"a": 0, "b":  0.1, "in": 0},
+      {"a": 2, "b": null, "in": 1},
+      {"a": 1, "b":  1.0, "in": 1}
   ])");
 }
 
 TEST_F(FilterTest, ConditionOnAbsentColumn) {
   AssertFilter("a"_ == 0 and "b"_ > 0.0 and "b"_ < 1.0 and "absent"_ == 0,
                {field("a", int32()), field("b", float64())}, R"([
-      {"a": 0, "b": -0.1, "in": null},
+      {"a": 0, "b": -0.1, "in": false},
       {"a": 0, "b":  0.3, "in": null},
-      {"a": 1, "b":  0.2, "in": null},
-      {"a": 2, "b": -0.1, "in": null},
+      {"a": 1, "b":  0.2, "in": false},
+      {"a": 2, "b": -0.1, "in": false},
       {"a": 0, "b":  0.1, "in": null},
       {"a": 0, "b": null, "in": null},
-      {"a": 0, "b":  1.0, "in": null}
+      {"a": 0, "b":  1.0, "in": false}
   ])");
 }
 
-TEST_F(FilterTest, DISABLED_KleeneTruthTables) {
-  // FIXME(bkietz) enable this test after ARROW-6396
-  // TODO(bkietz) also test various ranks against each other
+TEST_F(FilterTest, KleeneTruthTables) {
   AssertFilter("a"_ and "b"_, {field("a", boolean()), field("b", boolean())}, R"([
     {"a":null,  "b":null,  "in":null},
     {"a":null,  "b":true,  "in":null},
@@ -269,7 +385,7 @@ TEST_F(FilterTest, DISABLED_KleeneTruthTables) {
     {"a":false,  "b":false,  "in":false}
   ])");
 
-  AssertFilter("a"_ and "b"_, {field("a", boolean()), field("b", boolean())}, R"([
+  AssertFilter("a"_ or "b"_, {field("a", boolean()), field("b", boolean())}, R"([
     {"a":null,  "b":null,  "in":null},
     {"a":null,  "b":true,  "in":true},
     {"a":null,  "b":false, "in":null},
@@ -283,16 +399,14 @@ TEST_F(FilterTest, DISABLED_KleeneTruthTables) {
 
 class TakeExpression : public CustomExpression {
  public:
-  TakeExpression(std::shared_ptr<Expression> operand, std::shared_ptr<Array> dictionary)
+  TakeExpression(ExpressionPtr operand, std::shared_ptr<Array> dictionary)
       : operand_(std::move(operand)), dictionary_(std::move(dictionary)) {}
 
   std::string ToString() const override {
     return dictionary_->ToString() + "[" + operand_->ToString() + "]";
   }
 
-  std::shared_ptr<Expression> Copy() const override {
-    return std::make_shared<TakeExpression>(*this);
-  }
+  ExpressionPtr Copy() const override { return std::make_shared<TakeExpression>(*this); }
 
   bool Equals(const Expression& other) const override {
     // in a real CustomExpression this would need to be more sophisticated
@@ -313,28 +427,37 @@ class TakeExpression : public CustomExpression {
 
     using TreeEvaluator::Evaluate;
 
-    Result<compute::Datum> Evaluate(const CustomExpression& expr,
+    Result<compute::Datum> Evaluate(const Expression& expr,
                                     const RecordBatch& batch) const override {
-      const auto& take_expr = checked_cast<const TakeExpression&>(expr);
+      if (expr.type() == ExpressionType::CUSTOM) {
+        const auto& take_expr = checked_cast<const TakeExpression&>(expr);
+        return EvaluateTake(take_expr, batch);
+      }
+      return TreeEvaluator::Evaluate(expr, batch);
+    }
+
+    Result<compute::Datum> EvaluateTake(const TakeExpression& take_expr,
+                                        const RecordBatch& batch) const {
       ARROW_ASSIGN_OR_RAISE(auto indices, Evaluate(*take_expr.operand_, batch));
 
       if (indices.kind() == Datum::SCALAR) {
         std::shared_ptr<Array> indices_array;
-        RETURN_NOT_OK(MakeArrayFromScalar(ctx_->memory_pool(), *indices.scalar(),
+        RETURN_NOT_OK(MakeArrayFromScalar(default_memory_pool(), *indices.scalar(),
                                           batch.num_rows(), &indices_array));
         indices = compute::Datum(indices_array->data());
       }
 
       DCHECK_EQ(indices.kind(), Datum::ARRAY);
       compute::Datum out;
-      RETURN_NOT_OK(compute::Take(ctx_, compute::Datum(take_expr.dictionary_->data()),
+      compute::FunctionContext ctx{default_memory_pool()};
+      RETURN_NOT_OK(compute::Take(&ctx, compute::Datum(take_expr.dictionary_->data()),
                                   indices, compute::TakeOptions(), &out));
       return std::move(out);
     }
   };
 
  private:
-  std::shared_ptr<Expression> operand_;
+  ExpressionPtr operand_;
   std::shared_ptr<Array> dictionary_;
 };
 
@@ -367,7 +490,7 @@ TEST_F(ExpressionsTest, TakeAssumeYieldsNothing) {
 }
 
 TEST_F(FilterTest, EvaluateTakeExpression) {
-  evaluator_ = std::make_shared<TakeExpression::Evaluator>(&ctx_);
+  evaluator_ = std::make_shared<TakeExpression::Evaluator>(default_memory_pool());
 
   auto dict = ArrayFromJSON(float64(), "[0.0, 0.25, 0.5, 0.75, 1.0]");
 
@@ -381,6 +504,23 @@ TEST_F(FilterTest, EvaluateTakeExpression) {
       {"b": null, "f": 0.0, "in": null},
       {"b": 0, "f":  1.0, "in": 0}
   ])");
+}
+
+void AssertFieldsInExpression(ExpressionPtr expr, std::vector<std::string> expected) {
+  EXPECT_THAT(FieldsInExpression(expr), testing::ContainerEq(expected));
+}
+
+TEST(FieldsInExpressionTest, Basic) {
+  AssertFieldsInExpression(scalar(true), {});
+
+  AssertFieldsInExpression(("a"_).Copy(), {"a"});
+  AssertFieldsInExpression(("a"_ == 1).Copy(), {"a"});
+  AssertFieldsInExpression(("a"_ == "b"_).Copy(), {"a", "b"});
+
+  AssertFieldsInExpression(("a"_ == 1 || "a"_ == 2).Copy(), {"a", "a"});
+  AssertFieldsInExpression(("a"_ == 1 || "b"_ == 2).Copy(), {"a", "b"});
+  AssertFieldsInExpression((not("a"_ == 1) && ("b"_ == 2 || not("c"_ < 3))).Copy(),
+                           {"a", "b", "c"});
 }
 
 }  // namespace dataset

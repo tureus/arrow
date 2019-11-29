@@ -93,6 +93,7 @@ set(ARROW_SRCS
     array/concatenate.cc
     array/dict_internal.cc
     array/diff.cc
+    array/validate.cc
     buffer.cc
     compare.cc
     extension_type.cc
@@ -121,7 +122,6 @@ set(ARROW_SRCS
     io/hdfs_internal.cc
     io/interfaces.cc
     io/memory.cc
-    io/readahead.cc
     io/slow.cc
     testing/util.cc
     util/basic_decimal.cc
@@ -129,6 +129,7 @@ set(ARROW_SRCS
     util/compression.cc
     util/cpu_info.cc
     util/decimal.cc
+    util/delimiting.cc
     util/formatting.cc
     util/int_util.cc
     util/io_util.cc
@@ -136,14 +137,42 @@ set(ARROW_SRCS
     util/logging.cc
     util/key_value_metadata.cc
     util/memory.cc
+    util/parsing.cc
     util/string.cc
     util/string_builder.cc
     util/task_group.cc
     util/thread_pool.cc
     util/trie.cc
+    util/uri.cc
     util/utf8.cc
     vendored/base64.cpp
-    vendored/datetime/tz.cpp)
+    vendored/datetime/tz.cpp
+    vendored/double-conversion/bignum.cc
+    vendored/double-conversion/double-conversion.cc
+    vendored/double-conversion/bignum-dtoa.cc
+    vendored/double-conversion/fast-dtoa.cc
+    vendored/double-conversion/cached-powers.cc
+    vendored/double-conversion/fixed-dtoa.cc
+    vendored/double-conversion/diy-fp.cc
+    vendored/double-conversion/strtod.cc
+    vendored/uriparser/UriCommon.c
+    vendored/uriparser/UriCompare.c
+    vendored/uriparser/UriEscape.c
+    vendored/uriparser/UriFile.c
+    vendored/uriparser/UriIp4Base.c
+    vendored/uriparser/UriIp4.c
+    vendored/uriparser/UriMemory.c
+    vendored/uriparser/UriNormalizeBase.c
+    vendored/uriparser/UriNormalize.c
+    vendored/uriparser/UriParseBase.c
+    vendored/uriparser/UriParse.c
+    vendored/uriparser/UriQuery.c
+    vendored/uriparser/UriRecompose.c
+    vendored/uriparser/UriResolve.c
+    vendored/uriparser/UriShorten.c)
+
+# Disable DLL exports in vendored uriparser library
+add_definitions(-DURI_STATIC_BUILD)
 
 if(ARROW_WITH_BOOST_FILESYSTEM)
   add_definitions(-DARROW_WITH_BOOST_FILESYSTEM)
@@ -210,7 +239,7 @@ endif()
 
 unset(_allocator_dependencies)
 
-if("${COMPILER_FAMILY}" STREQUAL "clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set_property(SOURCE util/io_util.cc
                APPEND_STRING
                PROPERTY COMPILE_FLAGS " -Wno-unused-macros ")
@@ -244,8 +273,10 @@ if(ARROW_COMPUTE)
               compute/kernels/hash.cc
               compute/kernels/filter.cc
               compute/kernels/mean.cc
+              compute/kernels/minmax.cc
               compute/kernels/sort_to_indices.cc
               compute/kernels/sum.cc
+              compute/kernels/add.cc
               compute/kernels/take.cc
               compute/kernels/isin.cc
               compute/kernels/util_internal.cc
@@ -264,6 +295,14 @@ endif()
 if(ARROW_FILESYSTEM)
   add_subdirectory(filesystem)
 
+  if(ARROW_HDFS)
+    add_definitions(-DARROW_HDFS)
+  endif()
+
+  if(ARROW_S3)
+    add_definitions(-DARROW_S3)
+  endif()
+
   list(APPEND ARROW_SRCS
               filesystem/filesystem.cc
               filesystem/localfs.cc
@@ -274,6 +313,10 @@ if(ARROW_FILESYSTEM)
 
   if(ARROW_S3)
     list(APPEND ARROW_SRCS filesystem/s3fs.cc)
+  endif()
+
+  if(ARROW_HDFS)
+    list(APPEND ARROW_SRCS filesystem/hdfs.cc)
   endif()
 
   list(APPEND ARROW_TESTING_SRCS filesystem/test_util.cc)
@@ -329,10 +372,6 @@ if(ARROW_TENSORFLOW)
   add_subdirectory(adapters/tensorflow)
 endif()
 
-if(ARROW_WITH_URIPARSER)
-  list(APPEND ARROW_SRCS util/uri.cc)
-endif()
-
 if(NOT APPLE AND NOT MSVC)
   # Localize thirdparty symbols using a linker version script. This hides them
   # from the client application. The OS X linker does not support the
@@ -345,6 +384,10 @@ endif()
 set(ARROW_ALL_SRCS ${ARROW_SRCS})
 
 add_arrow_lib(arrow
+              CMAKE_PACKAGE_NAME
+              Arrow
+              PKG_CONFIG_NAME
+              arrow
               SOURCES
               ${ARROW_ALL_SRCS}
               OUTPUTS
@@ -373,6 +416,10 @@ endif()
 if(ARROW_BUILD_TESTS OR ARROW_BUILD_BENCHMARKS OR ARROW_BUILD_INTEGRATION)
   # that depend on gtest
   add_arrow_lib(arrow_testing
+                CMAKE_PACKAGE_NAME
+                ArrowTesting
+                PKG_CONFIG_NAME
+                arrow-testing
                 SOURCES
                 ${ARROW_TESTING_SRCS}
                 OUTPUTS
@@ -406,11 +453,15 @@ if(ARROW_WITH_BACKTRACE)
   endforeach()
 endif()
 
-# Headers: top level
 arrow_install_all_headers("arrow")
 
-# pkg-config support
-arrow_add_pkg_config("arrow")
+config_summary_cmake_setters("${CMAKE_CURRENT_BINARY_DIR}/ArrowOptions.cmake")
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ArrowOptions.cmake
+        DESTINATION "${ARROW_CMAKE_INSTALL_DIR}")
+
+# For backward compatibility for find_package(arrow)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/arrow-config.cmake
+        DESTINATION "${ARROW_CMAKE_INSTALL_DIR}")
 
 #
 # Unit tests

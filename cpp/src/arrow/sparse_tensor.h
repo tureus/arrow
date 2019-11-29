@@ -88,6 +88,19 @@ class ARROW_EXPORT SparseCOOIndex : public internal::SparseIndexBase<SparseCOOIn
  public:
   static constexpr SparseTensorFormat::type format_id = SparseTensorFormat::COO;
 
+  /// \brief Make SparseCOOIndex from raw properties
+  static Status Make(const std::shared_ptr<DataType> indices_type,
+                     const std::vector<int64_t>& indices_shape,
+                     const std::vector<int64_t>& indices_strides,
+                     std::shared_ptr<Buffer> indices_data,
+                     std::shared_ptr<SparseCOOIndex>* out);
+
+  /// \brief Make SparseCOOIndex from sparse tensor's shape properties and data
+  static Status Make(const std::shared_ptr<DataType> indices_type,
+                     const std::vector<int64_t>& shape, int64_t non_zero_length,
+                     std::shared_ptr<Buffer> indices_data,
+                     std::shared_ptr<SparseCOOIndex>* out);
+
   /// \brief Construct SparseCOOIndex from column-major NumericTensor
   explicit SparseCOOIndex(const std::shared_ptr<Tensor>& coords);
 
@@ -129,6 +142,21 @@ class ARROW_EXPORT SparseCOOIndex : public internal::SparseIndexBase<SparseCOOIn
 class ARROW_EXPORT SparseCSRIndex : public internal::SparseIndexBase<SparseCSRIndex> {
  public:
   static constexpr SparseTensorFormat::type format_id = SparseTensorFormat::CSR;
+
+  /// \brief Make SparseCSRIndex from raw properties
+  static Status Make(const std::shared_ptr<DataType> indices_type,
+                     const std::vector<int64_t>& indptr_shape,
+                     const std::vector<int64_t>& indices_shape,
+                     std::shared_ptr<Buffer> indptr_data,
+                     std::shared_ptr<Buffer> indices_data,
+                     std::shared_ptr<SparseCSRIndex>* out);
+
+  /// \brief Make SparseCSRIndex from sparse tensor's shape properties and data
+  static Status Make(const std::shared_ptr<DataType> indices_type,
+                     const std::vector<int64_t>& shape, int64_t non_zero_length,
+                     std::shared_ptr<Buffer> indptr_data,
+                     std::shared_ptr<Buffer> indices_data,
+                     std::shared_ptr<SparseCSRIndex>* out);
 
   /// \brief Construct SparseCSRIndex from two index vectors
   explicit SparseCSRIndex(const std::shared_ptr<Tensor>& indptr,
@@ -204,6 +232,15 @@ class ARROW_EXPORT SparseTensor {
   /// \brief Return whether sparse tensors are equal
   bool Equals(const SparseTensor& other) const;
 
+  /// \brief Return dense representation of sparse tensor as tensor
+  Status ToTensor(std::shared_ptr<Tensor>* out) const {
+    return ToTensor(default_memory_pool(), out);
+  }
+
+  /// \brief Return dense representation of sparse tensor as tensor
+  /// using specified memory pool
+  Status ToTensor(MemoryPool* pool, std::shared_ptr<Tensor>* out) const;
+
  protected:
   // Constructor with all attributes
   SparseTensor(const std::shared_ptr<DataType>& type, const std::shared_ptr<Buffer>& data,
@@ -226,11 +263,12 @@ class ARROW_EXPORT SparseTensor {
 namespace internal {
 
 ARROW_EXPORT
-void MakeSparseTensorFromTensor(const Tensor& tensor,
-                                SparseTensorFormat::type sparse_format_id,
-                                const std::shared_ptr<DataType>& index_value_type,
-                                std::shared_ptr<SparseIndex>* sparse_index,
-                                std::shared_ptr<Buffer>* data);
+Status MakeSparseTensorFromTensor(const Tensor& tensor,
+                                  SparseTensorFormat::type sparse_format_id,
+                                  const std::shared_ptr<DataType>& index_value_type,
+                                  MemoryPool* pool,
+                                  std::shared_ptr<SparseIndex>* out_sparse_index,
+                                  std::shared_ptr<Buffer>* out_data);
 
 }  // namespace internal
 
@@ -258,15 +296,35 @@ class SparseTensorImpl : public SparseTensor {
   ///
   /// The dense tensor is re-encoded as a sparse index and a physical
   /// data buffer for the non-zero value.
-  SparseTensorImpl(const Tensor& tensor,
-                   const std::shared_ptr<DataType>& index_value_type)
-      : SparseTensorImpl(NULLPTR, tensor.type(), NULLPTR, tensor.shape(),
-                         tensor.dim_names_) {
-    internal::MakeSparseTensorFromTensor(tensor, SparseIndexType::format_id,
-                                         index_value_type, &sparse_index_, &data_);
+  static Status Make(const Tensor& tensor,
+                     const std::shared_ptr<DataType>& index_value_type, MemoryPool* pool,
+                     std::shared_ptr<SparseTensorImpl<SparseIndexType>>* out) {
+    std::shared_ptr<SparseIndex> sparse_index;
+    std::shared_ptr<Buffer> data;
+    ARROW_RETURN_NOT_OK(internal::MakeSparseTensorFromTensor(
+        tensor, SparseIndexType::format_id, index_value_type, pool, &sparse_index,
+        &data));
+    *out = std::make_shared<SparseTensorImpl<SparseIndexType>>(
+        internal::checked_pointer_cast<SparseIndexType>(sparse_index), tensor.type(),
+        data, tensor.shape(), tensor.dim_names_);
+    return Status::OK();
   }
 
-  explicit SparseTensorImpl(const Tensor& tensor) : SparseTensorImpl(tensor, int64()) {}
+  static Status Make(const Tensor& tensor,
+                     const std::shared_ptr<DataType>& index_value_type,
+                     std::shared_ptr<SparseTensorImpl<SparseIndexType>>* out) {
+    return Make(tensor, index_value_type, default_memory_pool(), out);
+  }
+
+  static Status Make(const Tensor& tensor, MemoryPool* pool,
+                     std::shared_ptr<SparseTensorImpl<SparseIndexType>>* out) {
+    return Make(tensor, int64(), pool, out);
+  }
+
+  static Status Make(const Tensor& tensor,
+                     std::shared_ptr<SparseTensorImpl<SparseIndexType>>* out) {
+    return Make(tensor, default_memory_pool(), out);
+  }
 
  private:
   ARROW_DISALLOW_COPY_AND_ASSIGN(SparseTensorImpl);

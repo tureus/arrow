@@ -20,6 +20,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "arrow/dataset/partition.h"
 #include "arrow/dataset/test_util.h"
 #include "arrow/filesystem/test_util.h"
 
@@ -30,38 +31,76 @@ class FileSystemDataSourceDiscoveryTest : public TestFileSystemBasedDataSource {
  public:
   void MakeDiscovery(const std::vector<fs::FileStats>& files) {
     MakeFileSystem(files);
-    ASSERT_OK(
-        FileSystemDataSourceDiscovery::Make(fs_.get(), files, format_, &discovery_));
+    ASSERT_OK_AND_ASSIGN(discovery_, FileSystemDataSourceDiscovery::Make(
+                                         fs_, selector_, format_, discovery_options_));
   }
 
-  void MakeDiscovery(const std::vector<fs::FileStats>& files, fs::Selector selector) {
-    MakeFileSystem(files);
-    ASSERT_OK(
-        FileSystemDataSourceDiscovery::Make(fs_.get(), selector, format_, &discovery_));
+  void AssertFinishWithPaths(std::vector<std::string> paths) {
+    ASSERT_OK_AND_ASSIGN(source_, discovery_->Finish());
+    AssertFragmentsAreFromPath(source_->GetFragments(options_), paths);
   }
 
  protected:
-  std::shared_ptr<DataSourceDiscovery> discovery_;
-  std::shared_ptr<FileFormat> format_ = std::make_shared<DummyFileFormat>();
+  fs::Selector selector_;
+  FileSystemDiscoveryOptions discovery_options_;
+  DataSourceDiscoveryPtr discovery_;
+  FileFormatPtr format_ = std::make_shared<DummyFileFormat>();
 };
 
 TEST_F(FileSystemDataSourceDiscoveryTest, Basic) {
   MakeDiscovery({fs::File("a"), fs::File("b")});
-
-  BuildOptions options;
-  ASSERT_OK(discovery_->Build(options, nullptr, &source_));
-  AssertFragmentsAreFromPath(source_->GetFragments(options_), {"a", "b"});
+  AssertFinishWithPaths({"a", "b"});
 }
 
 TEST_F(FileSystemDataSourceDiscoveryTest, Selector) {
-  // This test ensure that the Selector is enforced.
-  fs::Selector selector;
-  selector.base_dir = "A";
-  MakeDiscovery({fs::File("0"), fs::File("A/a")}, selector);
+  selector_.base_dir = "A";
+  selector_.recursive = true;
 
-  BuildOptions options;
-  ASSERT_OK(discovery_->Build(options, nullptr, &source_));
-  AssertFragmentsAreFromPath(source_->GetFragments(options_), {"A/a"});
+  MakeDiscovery({fs::File("0"), fs::File("A/a"), fs::File("A/A/a")});
+  // "0" doesn't match selector, so it has been dropped:
+  AssertFinishWithPaths({"A/a", "A/A/a"});
+
+  discovery_options_.partition_base_dir = "A/A";
+  MakeDiscovery({fs::File("0"), fs::File("A/a"), fs::File("A/A/a")});
+  // partition_base_dir should not affect filtered files, ony the applied
+  // partition scheme.
+  AssertFinishWithPaths({"A/a", "A/A/a"});
+}
+
+TEST_F(FileSystemDataSourceDiscoveryTest, Partition) {
+  selector_.base_dir = "a=ignored/base";
+  MakeDiscovery(
+      {fs::File(selector_.base_dir + "/a=1"), fs::File(selector_.base_dir + "/a=2")});
+
+  auto partition_scheme =
+      std::make_shared<HivePartitionScheme>(schema({field("a", int32())}));
+  ASSERT_OK(discovery_->SetPartitionScheme(partition_scheme));
+  AssertFinishWithPaths({selector_.base_dir + "/a=1", selector_.base_dir + "/a=2"});
+}
+
+TEST_F(FileSystemDataSourceDiscoveryTest, OptionsIgnoredDefaultPrefixes) {
+  MakeDiscovery({
+      fs::File("."),
+      fs::File("_"),
+      fs::File("_$folder$"),
+      fs::File("_SUCCESS"),
+      fs::File("not_ignored_by_default"),
+  });
+
+  AssertFinishWithPaths({"not_ignored_by_default"});
+}
+
+TEST_F(FileSystemDataSourceDiscoveryTest, OptionsIgnoredCustomPrefixes) {
+  discovery_options_.ignore_prefixes = {"not_ignored"};
+  MakeDiscovery({
+      fs::File("."),
+      fs::File("_"),
+      fs::File("_$folder$"),
+      fs::File("_SUCCESS"),
+      fs::File("not_ignored_by_default"),
+  });
+
+  AssertFinishWithPaths({".", "_", "_$folder$", "_SUCCESS"});
 }
 
 TEST_F(FileSystemDataSourceDiscoveryTest, Inspect) {
@@ -69,14 +108,13 @@ TEST_F(FileSystemDataSourceDiscoveryTest, Inspect) {
   format_ = std::make_shared<DummyFileFormat>(s);
 
   MakeDiscovery({});
-  std::shared_ptr<Schema> actual;
 
   // No files
-  ASSERT_OK(discovery_->Inspect(&actual));
+  ASSERT_OK_AND_ASSIGN(auto actual, discovery_->Inspect());
   EXPECT_EQ(actual, nullptr);
 
   MakeDiscovery({fs::File("test")});
-  ASSERT_OK(discovery_->Inspect(&actual));
+  ASSERT_OK_AND_ASSIGN(actual, discovery_->Inspect());
   EXPECT_EQ(actual, s);
 }
 

@@ -208,11 +208,11 @@ cdef class FileSystem:
         if isinstance(paths_or_selector, Selector):
             with nogil:
                 selector = (<Selector>paths_or_selector).selector
-                check_status(self.fs.GetTargetStats(selector, &stats))
+                stats = GetResultValue(self.fs.GetTargetStats(selector))
         elif isinstance(paths_or_selector, (list, tuple)):
             paths = [_path_as_bytes(s) for s in paths_or_selector]
             with nogil:
-                check_status(self.fs.GetTargetStats(paths, &stats))
+                stats = GetResultValue(self.fs.GetTargetStats(paths))
         else:
             raise TypeError('Must pass either paths or a Selector')
 
@@ -334,7 +334,7 @@ cdef class FileSystem:
             shared_ptr[CRandomAccessFile] in_handle
 
         with nogil:
-            check_status(self.fs.OpenInputFile(pathstr, &in_handle))
+            in_handle = GetResultValue(self.fs.OpenInputFile(pathstr))
 
         stream.set_random_access_file(in_handle)
         stream.is_readable = True
@@ -367,7 +367,7 @@ cdef class FileSystem:
             shared_ptr[CInputStream] in_handle
 
         with nogil:
-            check_status(self.fs.OpenInputStream(pathstr, &in_handle))
+            in_handle = GetResultValue(self.fs.OpenInputStream(pathstr))
 
         stream.set_input_stream(in_handle)
         stream.is_readable = True
@@ -405,7 +405,7 @@ cdef class FileSystem:
             shared_ptr[COutputStream] out_handle
 
         with nogil:
-            check_status(self.fs.OpenOutputStream(pathstr, &out_handle))
+            out_handle = GetResultValue(self.fs.OpenOutputStream(pathstr))
 
         stream.set_output_stream(out_handle)
         stream.is_writable = True
@@ -443,7 +443,7 @@ cdef class FileSystem:
             shared_ptr[COutputStream] out_handle
 
         with nogil:
-            check_status(self.fs.OpenAppendStream(pathstr, &out_handle))
+            out_handle = GetResultValue(self.fs.OpenAppendStream(pathstr))
 
         stream.set_output_stream(out_handle)
         stream.is_writable = True
@@ -453,21 +453,67 @@ cdef class FileSystem:
         )
 
 
+cdef class LocalFileSystemOptions:
+    """Options for LocalFileSystemOptions.
+
+    Parameters
+    ----------
+    use_mmap: bool, default False
+        Whether open_input_stream and open_input_file should return
+        a mmap'ed file or a regular file.
+    """
+    cdef:
+        CLocalFileSystemOptions options
+
+    # Avoid mistakingly creating attributes
+    __slots__ = ()
+
+    def __init__(self, use_mmap=None):
+        self.options = CLocalFileSystemOptions.Defaults()
+        if use_mmap is not None:
+            self.use_mmap = use_mmap
+
+    @property
+    def use_mmap(self):
+        """
+        Whether open_input_stream and open_input_file should return
+        a mmap'ed file or a regular file.
+        """
+        return self.options.use_mmap
+
+    @use_mmap.setter
+    def use_mmap(self, value):
+        self.options.use_mmap = value
+
+
 cdef class LocalFileSystem(FileSystem):
     """A FileSystem implementation accessing files on the local machine.
 
     Details such as symlinks are abstracted away (symlinks are always followed,
     except when deleting an entry).
+
+    Parameters
+    ----------
+    options: LocalFileSystemOptions, default None
+    kwargs: individual named options, for convenience
+
     """
 
-    def __init__(self):
-        cdef shared_ptr[CLocalFileSystem] wrapped
-        wrapped = make_shared[CLocalFileSystem]()
-        self.init(<shared_ptr[CFileSystem]> wrapped)
+    def __init__(self, LocalFileSystemOptions options=None, **kwargs):
+        cdef:
+            CLocalFileSystemOptions c_options
+            shared_ptr[CLocalFileSystem] c_fs
 
-    cdef init(self, const shared_ptr[CFileSystem]& wrapped):
-        FileSystem.init(self, wrapped)
-        self.localfs = <CLocalFileSystem*> wrapped.get()
+        options = options or LocalFileSystemOptions()
+        for k, v in kwargs.items():
+            setattr(options, k, v)
+        c_options = options.options
+        c_fs = make_shared[CLocalFileSystem](c_options)
+        self.init(<shared_ptr[CFileSystem]> c_fs)
+
+    cdef init(self, const shared_ptr[CFileSystem]& c_fs):
+        FileSystem.init(self, c_fs)
+        self.localfs = <CLocalFileSystem*> c_fs.get()
 
 
 cdef class SubTreeFileSystem(FileSystem):

@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -26,11 +27,12 @@
 #include "arrow/dataset/type_fwd.h"
 #include "arrow/dataset/visibility.h"
 #include "arrow/record_batch.h"
+#include "arrow/result.h"
 #include "arrow/scalar.h"
+#include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/util/iterator.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/stl.h"
 
 namespace arrow {
 namespace dataset {
@@ -70,7 +72,7 @@ class RecordBatchProjector {
     DCHECK_EQ(scalars_.size(), missing_columns_.size());
   }
 
-  Status Project(const RecordBatch& batch, std::shared_ptr<RecordBatch>* out) {
+  Result<std::shared_ptr<RecordBatch>> Project(const RecordBatch& batch) {
     if (from_ == nullptr || !batch.schema()->Equals(*from_)) {
       RETURN_NOT_OK(SetInputSchema(batch.schema()));
     }
@@ -91,8 +93,7 @@ class RecordBatchProjector {
       columns[i] = missing_columns_[i]->Slice(0, batch.num_rows());
     }
 
-    *out = RecordBatch::Make(to_, batch.num_rows(), std::move(columns));
-    return Status::OK();
+    return RecordBatch::Make(to_, batch.num_rows(), std::move(columns));
   }
 
   const std::shared_ptr<Schema>& schema() const { return to_; }
@@ -153,52 +154,15 @@ class RecordBatchProjector {
   std::vector<std::shared_ptr<Scalar>> scalars_;
 };
 
-/// Wraps a RecordBatchIterator and projects each yielded batch using the given projector.
-///
-/// Note that as with RecordBatchProjector, ProjectedRecordBatchReader is most efficient
-/// when projecting record batches with a consistent schema (for example batches from a
-/// table), but it can project record batches having any schema.
-class ProjectedRecordBatchReader : public RecordBatchReader {
- public:
-  static Status Make(MemoryPool* pool, RecordBatchProjector projector,
-                     RecordBatchIterator wrapped, RecordBatchIterator* out) {
-    *out = RecordBatchIterator(
-        ProjectedRecordBatchReader(pool, std::move(projector), std::move(wrapped)));
-    return Status::OK();
-  }
-
-  Status ReadNext(std::shared_ptr<RecordBatch>* out) override {
-    std::shared_ptr<RecordBatch> rb;
-    RETURN_NOT_OK(wrapped_.Next(&rb));
-    if (rb == nullptr) {
-      *out = nullptr;
-      return Status::OK();
-    }
-
-    return projector_.Project(*rb, out);
-  }
-
-  std::shared_ptr<Schema> schema() const override { return projector_.schema(); }
-
- private:
-  ProjectedRecordBatchReader(MemoryPool* pool, RecordBatchProjector projector,
-                             RecordBatchIterator wrapped)
-      : projector_(std::move(projector)), wrapped_(std::move(wrapped)) {}
-
-  RecordBatchProjector projector_;
-  RecordBatchIterator wrapped_;
-};
-
 /// \brief GetFragmentsFromSources transforms a vector<DataSource> into a
 /// flattened DataFragmentIterator.
 static inline DataFragmentIterator GetFragmentsFromSources(
-    const std::vector<std::shared_ptr<DataSource>>& sources,
-    std::shared_ptr<ScanOptions> options) {
+    const DataSourceVector& sources, ScanOptionsPtr options) {
   // Iterator<DataSource>
   auto sources_it = MakeVectorIterator(sources);
 
   // DataSource -> Iterator<DataFragment>
-  auto fn = [options](std::shared_ptr<DataSource> source) -> DataFragmentIterator {
+  auto fn = [options](DataSourcePtr source) -> DataFragmentIterator {
     return source->GetFragments(options);
   };
 
@@ -207,6 +171,16 @@ static inline DataFragmentIterator GetFragmentsFromSources(
 
   // Iterator<DataFragment>
   return MakeFlattenIterator(std::move(fragments_it));
+}
+
+inline std::shared_ptr<Schema> SchemaFromColumnNames(
+    const std::shared_ptr<Schema>& input, const std::vector<std::string>& column_names) {
+  std::vector<std::shared_ptr<Field>> columns;
+  for (const auto& name : column_names) {
+    columns.push_back(input->GetFieldByName(name));
+  }
+
+  return std::make_shared<Schema>(columns);
 }
 
 }  // namespace dataset

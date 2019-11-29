@@ -151,9 +151,19 @@ UTF8_LENGTH(lengthUtf8, binary)
 // Convert a utf8 sequence to upper case.
 // TODO : This handles only ascii characters.
 FORCE_INLINE
-char* upper_utf8(int64 context, const char* data, int32 data_len, int32_t* out_len) {
+const char* upper_utf8(int64 context, const char* data, int32 data_len,
+                       int32_t* out_len) {
+  if (data_len == 0) {
+    *out_len = 0;
+    return "";
+  }
+
   char* ret = reinterpret_cast<char*>(gdv_fn_context_arena_malloc(context, data_len));
-  // TODO: handle allocation failures
+  if (ret == nullptr) {
+    gdv_fn_context_set_error_msg(context, "Could not allocate memory for output string");
+    *out_len = 0;
+    return "";
+  }
   for (int32 i = 0; i < data_len; ++i) {
     char cur = data[i];
 
@@ -163,6 +173,75 @@ char* upper_utf8(int64 context, const char* data, int32 data_len, int32_t* out_l
       cur = static_cast<char>(cur - 0x20);
     }
     ret[i] = cur;
+  }
+  *out_len = data_len;
+  return ret;
+}
+
+// Convert a utf8 sequence to lower case.
+// TODO : This handles only ascii characters.
+FORCE_INLINE
+const char* lower_utf8(int64 context, const char* data, int32 data_len,
+                       int32_t* out_len) {
+  if (data_len == 0) {
+    *out_len = 0;
+    return "";
+  }
+
+  char* ret = reinterpret_cast<char*>(gdv_fn_context_arena_malloc(context, data_len));
+  if (ret == nullptr) {
+    gdv_fn_context_set_error_msg(context, "Could not allocate memory for output string");
+    *out_len = 0;
+    return "";
+  }
+  for (int32 i = 0; i < data_len; ++i) {
+    char cur = data[i];
+
+    // 'A' - 'Z' : 0x41 - 0x5a
+    // 'a' - 'z' : 0x61 - 0x7a
+    if (cur >= 0x41 && cur <= 0x5a) {
+      cur = static_cast<char>(cur + 0x20);
+    }
+    ret[i] = cur;
+  }
+  *out_len = data_len;
+  return ret;
+}
+
+// Reverse a utf8 sequence
+FORCE_INLINE
+const char* reverse_utf8(int64 context, const char* data, int32 data_len,
+                         int32_t* out_len) {
+  if (data_len == 0) {
+    *out_len = 0;
+    return "";
+  }
+
+  char* ret = reinterpret_cast<char*>(gdv_fn_context_arena_malloc(context, data_len));
+  if (ret == nullptr) {
+    gdv_fn_context_set_error_msg(context, "Could not allocate memory for output string");
+    *out_len = 0;
+    return "";
+  }
+
+  int32 char_len;
+  for (int32 i = 0; i < data_len; i += char_len) {
+    char_len = utf8_char_length(data[i]);
+
+    if (char_len == 0 || i + char_len > data_len) {  // invalid byte or incomplete glyph
+      set_error_for_invalid_utf(context, data[i]);
+      *out_len = 0;
+      return "";
+    }
+
+    for (int32 j = 0; j < char_len; ++j) {
+      if (j > 0 && (data[i + j] & 0xC0) != 0x80) {  // bytes following head-byte of glyph
+        set_error_for_invalid_utf(context, data[i + j]);
+        *out_len = 0;
+        return "";
+      }
+      ret[data_len - i - char_len + j] = data[i + j];
+    }
   }
   *out_len = data_len;
   return ret;

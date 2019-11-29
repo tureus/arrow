@@ -26,13 +26,23 @@ import pytest
 import pyarrow as pa
 from pyarrow.tests.test_io import gzip_compress, gzip_decompress
 from pyarrow.fs import (FileType, Selector, FileSystem, LocalFileSystem,
-                        SubTreeFileSystem)
+                        LocalFileSystemOptions, SubTreeFileSystem)
 
 
 @pytest.fixture
 def localfs(request, tempdir):
     return dict(
         fs=LocalFileSystem(),
+        pathfn=lambda p: (tempdir / p).as_posix(),
+        allow_move_dir=True,
+        allow_append_to_file=True,
+    )
+
+
+@pytest.fixture
+def localfs_with_mmap(request, tempdir):
+    return dict(
+        fs=LocalFileSystem(use_mmap=True),
         pathfn=lambda p: (tempdir / p).as_posix(),
         allow_move_dir=True,
         allow_append_to_file=True,
@@ -51,9 +61,9 @@ def subtree_localfs(request, tempdir, localfs):
     )
 
 
-@pytest.mark.s3
 @pytest.fixture
 def s3fs(request, minio_server):
+    request.config.pyarrow.requires('s3')
     from pyarrow.s3fs import S3Options, S3FileSystem
 
     address, access_key, secret_key = minio_server
@@ -92,6 +102,10 @@ def subtree_s3fs(request, s3fs):
         id='LocalFileSystem()'
     ),
     pytest.param(
+        pytest.lazy_fixture('localfs_with_mmap'),
+        id='LocalFileSystem(use_mmap=True)'
+    ),
+    pytest.param(
         pytest.lazy_fixture('subtree_localfs'),
         id='SubTreeFileSystem(LocalFileSystem())'
     ),
@@ -99,10 +113,6 @@ def subtree_s3fs(request, s3fs):
         pytest.lazy_fixture('s3fs'),
         id='S3FileSystem'
     ),
-    pytest.param(
-        pytest.lazy_fixture('subtree_s3fs'),
-        id='SubTreeFileSystem(S3FileSystem())'
-    )
 ])
 def filesystem_config(request):
     return request.param
@@ -389,6 +399,26 @@ def test_open_append_stream(fs, pathfn, compression, buffer_size, compressor,
     else:
         with pytest.raises(pa.ArrowNotImplementedError):
             fs.open_append_stream(p, compression, buffer_size)
+
+
+def test_localfs_options():
+    options = LocalFileSystemOptions()
+    assert options.use_mmap is False
+    options.use_mmap = True
+    assert options.use_mmap is True
+
+    with pytest.raises(AttributeError):
+        options.xxx = True
+
+    options = LocalFileSystemOptions(use_mmap=True)
+    assert options.use_mmap is True
+
+    # LocalFileSystem instantiation
+    LocalFileSystem(LocalFileSystemOptions(use_mmap=True))
+    LocalFileSystem(use_mmap=False)
+
+    with pytest.raises(AttributeError):
+        LocalFileSystem(xxx=False)
 
 
 @pytest.mark.s3

@@ -48,7 +48,7 @@ set(ARROW_PYTHON_SRCS
 
 set(ARROW_PYTHON_DEPENDENCIES arrow_dependencies)
 
-if("${COMPILER_FAMILY}" STREQUAL "clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set_property(SOURCE pyarrow.cc APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-cast-qual ")
 endif()
 
@@ -61,6 +61,10 @@ endif()
 set(ARROW_PYTHON_INCLUDES ${NUMPY_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS})
 
 add_arrow_lib(arrow_python
+              CMAKE_PACKAGE_NAME
+              ArrowPython
+              PKG_CONFIG_NAME
+              arrow-python
               SOURCES
               ${ARROW_PYTHON_SRCS}
               OUTPUTS
@@ -93,6 +97,10 @@ if(ARROW_FLIGHT AND ARROW_BUILD_SHARED)
   # other solution is to link gRPC shared everywhere instead of statically only
   # in Flight)
   add_arrow_lib(arrow_python_flight
+                CMAKE_PACKAGE_NAME
+                ArrowPythonFlight
+                PKG_CONFIG_NAME
+                arrow-python-flight
                 SOURCES
                 flight.cc
                 OUTPUTS
@@ -120,7 +128,7 @@ if(ARROW_FLIGHT AND ARROW_BUILD_SHARED)
   endif()
 endif()
 
-if("${COMPILER_FAMILY}" STREQUAL "clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   # Clang, be quiet. Python C API has lots of macros
   set_property(SOURCE ${ARROW_PYTHON_SRCS}
                APPEND_STRING
@@ -128,9 +136,6 @@ if("${COMPILER_FAMILY}" STREQUAL "clang")
 endif()
 
 arrow_install_all_headers("arrow/python")
-
-# pkg-config support
-arrow_add_pkg_config("arrow-python")
 
 # ----------------------------------------------------------------------
 

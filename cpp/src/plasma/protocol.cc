@@ -64,6 +64,11 @@ ToFlatbuffer(flatbuffers::FlatBufferBuilder* fbb,
   return fbb->CreateVector(arrow::util::MakeNonNull(results.data()), results.size());
 }
 
+flatbuffers::Offset<flatbuffers::Vector<int64_t>> ToFlatbuffer(
+    flatbuffers::FlatBufferBuilder* fbb, const std::vector<int64_t>& data) {
+  return fbb->CreateVector(arrow::util::MakeNonNull(data.data()), data.size());
+}
+
 Status PlasmaReceive(int sock, MessageType message_type, std::vector<uint8_t>* buffer) {
   MessageType type;
   RETURN_NOT_OK(ReadMessage(sock, &type, buffer));
@@ -269,7 +274,7 @@ Status SendCreateAndSealRequest(int sock, const ObjectID& object_id,
 
 Status ReadCreateAndSealRequest(uint8_t* data, size_t size, ObjectID* object_id,
                                 std::string* object_data, std::string* metadata,
-                                unsigned char* digest) {
+                                std::string* digest) {
   DCHECK(data);
   auto message = flatbuffers::GetRoot<fb::PlasmaCreateAndSealRequest>(data);
   DCHECK(VerifyFlatbuffer(message, data, size));
@@ -278,7 +283,7 @@ Status ReadCreateAndSealRequest(uint8_t* data, size_t size, ObjectID* object_id,
   *object_data = message->data()->str();
   *metadata = message->metadata()->str();
   ARROW_CHECK(message->digest()->size() == kDigestSize);
-  memcpy(digest, message->digest()->data(), kDigestSize);
+  digest->assign(message->digest()->data(), kDigestSize);
   return Status::OK();
 }
 
@@ -379,22 +384,21 @@ Status ReadAbortReply(uint8_t* data, size_t size, ObjectID* object_id) {
 
 // Seal messages.
 
-Status SendSealRequest(int sock, ObjectID object_id, unsigned char* digest) {
+Status SendSealRequest(int sock, ObjectID object_id, const std::string& digest) {
   flatbuffers::FlatBufferBuilder fbb;
-  auto digest_string = fbb.CreateString(reinterpret_cast<char*>(digest), kDigestSize);
   auto message = fb::CreatePlasmaSealRequest(fbb, fbb.CreateString(object_id.binary()),
-                                             digest_string);
+                                             fbb.CreateString(digest));
   return PlasmaSend(sock, MessageType::PlasmaSealRequest, &fbb, message);
 }
 
 Status ReadSealRequest(uint8_t* data, size_t size, ObjectID* object_id,
-                       unsigned char* digest) {
+                       std::string* digest) {
   DCHECK(data);
   auto message = flatbuffers::GetRoot<fb::PlasmaSealRequest>(data);
   DCHECK(VerifyFlatbuffer(message, data, size));
   *object_id = ObjectID::from_binary(message->object_id()->str());
-  ARROW_CHECK(message->digest()->size() == kDigestSize);
-  memcpy(digest, message->digest()->data(), kDigestSize);
+  ARROW_CHECK_EQ(message->digest()->size(), kDigestSize);
+  digest->assign(message->digest()->data(), kDigestSize);
   return Status::OK();
 }
 
@@ -773,6 +777,42 @@ Status ReadDataReply(uint8_t* data, size_t size, ObjectID* object_id,
   *object_id = ObjectID::from_binary(message->object_id()->str());
   *object_size = static_cast<int64_t>(message->object_size());
   *metadata_size = static_cast<int64_t>(message->metadata_size());
+  return Status::OK();
+}
+
+// RefreshLRU messages.
+
+Status SendRefreshLRURequest(int sock, const std::vector<ObjectID>& object_ids) {
+  flatbuffers::FlatBufferBuilder fbb;
+
+  auto message = fb::CreatePlasmaRefreshLRURequest(
+      fbb, ToFlatbuffer(&fbb, object_ids.data(), object_ids.size()));
+
+  return PlasmaSend(sock, MessageType::PlasmaRefreshLRURequest, &fbb, message);
+}
+
+Status ReadRefreshLRURequest(uint8_t* data, size_t size,
+                             std::vector<ObjectID>* object_ids) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaRefreshLRURequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  for (uoffset_t i = 0; i < message->object_ids()->size(); ++i) {
+    auto object_id = message->object_ids()->Get(i)->str();
+    object_ids->push_back(ObjectID::from_binary(object_id));
+  }
+  return Status::OK();
+}
+
+Status SendRefreshLRUReply(int sock) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaRefreshLRUReply(fbb);
+  return PlasmaSend(sock, MessageType::PlasmaRefreshLRUReply, &fbb, message);
+}
+
+Status ReadRefreshLRUReply(uint8_t* data, size_t size) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaRefreshLRUReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
   return Status::OK();
 }
 

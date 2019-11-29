@@ -67,6 +67,11 @@ Arrow C++ library first.
 
 ``` r
 library(arrow)
+#> 
+#> Attaching package: 'arrow'
+#> The following object is masked from 'package:utils':
+#> 
+#>     timestamp
 set.seed(24)
 
 tab <- Table$create(
@@ -96,17 +101,19 @@ tab$x
 #>   10
 #> ]
 as.data.frame(tab)
-#>     x            y z
-#> 1   1 -0.545880758 b
-#> 2   2  0.536585304 c
-#> 3   3  0.419623149 b
-#> 4   4 -0.583627199 c
-#> 5   5  0.847460017 b
-#> 6   6  0.266021979 c
-#> 7   7  0.444585270 b
-#> 8   8 -0.466495124 c
-#> 9   9 -0.848370044 b
-#> 10 10  0.002311942 c
+#> # A tibble: 10 x 3
+#>        x        y z    
+#>    <int>    <dbl> <fct>
+#>  1     1 -0.546   b    
+#>  2     2  0.537   c    
+#>  3     3  0.420   b    
+#>  4     4 -0.584   c    
+#>  5     5  0.847   b    
+#>  6     6  0.266   c    
+#>  7     7  0.445   b    
+#>  8     8 -0.466   c    
+#>  9     9 -0.848   b    
+#> 10    10  0.00231 c
 ```
 
 ## Installing a development version
@@ -122,28 +129,8 @@ These daily package builds are not official Apache releases and are not
 recommended for production use. They may be useful for testing bug fixes
 and new features under active development.
 
-Linux users will need to build the Arrow C++ library from source. See
-“Development” below. Once you have the C++ library, you can install
-the R package from GitHub using the
-[`remotes`](https://remotes.r-lib.org/) package. From within an R
-session,
-
-``` r
-# install.packages("remotes") # Or install "devtools", which includes remotes
-remotes::install_github("apache/arrow/r")
-```
-
-or if you prefer to stay at the command line,
-
-``` shell
-R -e 'remotes::install_github("apache/arrow/r")'
-```
-
-You can specify a particular commit, branch, or
-[release](https://github.com/apache/arrow/releases) to install by
-including a `ref` argument to `install_github()`. This is particularly
-useful to match the R package version to the C++ library version you’ve
-installed.
+Linux users will need to build the Arrow C++ library from source, then
+install the R package from source, as described in the next section.
 
 ## Developing
 
@@ -190,7 +177,7 @@ checkout:
 
 ``` shell
 cd ../../r
-R -e 'install.packages(c("devtools", "roxygen2", "pkgdown")); devtools::install_dev_deps()'
+R -e 'install.packages(c("devtools", "roxygen2", "pkgdown", "covr")); devtools::install_dev_deps()'
 R CMD INSTALL .
 ```
 
@@ -226,11 +213,11 @@ you will need to set the `ARROW_R_DEV` environment variable to `TRUE`
 sessions) so that the `data-raw/codegen.R` file is used for code
 generation.
 
-The codegen.R script has these dependencies:
+The codegen.R script has these additional dependencies:
 
 ``` r
 remotes::install_github("romainfrancois/decor")
-install.packages(c("dplyr", "purrr", "glue"))
+install.packages("glue")
 ```
 
 We use Google C++ style in our C++ code. Check for style errors with
@@ -258,6 +245,7 @@ devtools::document() # Update roxygen documentation
 rmarkdown::render("README.Rmd") # To rebuild README.md
 pkgdown::build_site() # To preview the documentation website
 devtools::check() # All package checks; see also below
+covr::package_coverage() # See test coverage statistics
 ```
 
 Any of those can be run from the command line by wrapping them in `R -e

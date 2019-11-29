@@ -17,6 +17,7 @@
 
 import warnings
 
+
 cdef class ChunkedArray(_PandasConvertible):
     """
     Array backed via one or more memory chunks.
@@ -80,12 +81,28 @@ cdef class ChunkedArray(_PandasConvertible):
     def __str__(self):
         return self.format()
 
-    def validate(self):
+    def validate(self, *, full=False):
         """
-        Validate chunked array consistency.
+        Perform validation checks.  An exception is raised if validation fails.
+
+        By default only cheap validation checks are run.  Pass `full=True`
+        for thorough validation checks (potentially O(n)).
+
+        Parameters
+        ----------
+        full: bool, default False
+            If True, run expensive checks, otherwise cheap checks only.
+
+        Raises
+        ------
+        ArrowInvalid
         """
-        with nogil:
-            check_status(self.sp_chunked_array.get().Validate())
+        if full:
+            with nogil:
+                check_status(self.sp_chunked_array.get().ValidateFull())
+        else:
+            with nogil:
+                check_status(self.sp_chunked_array.get().Validate())
 
     @property
     def null_count(self):
@@ -97,6 +114,16 @@ cdef class ChunkedArray(_PandasConvertible):
         int
         """
         return self.chunked_array.null_count()
+
+    @property
+    def nbytes(self):
+        """
+        Total number of bytes consumed by the elements of the chunked array.
+        """
+        size = 0
+        for chunk in self.iterchunks():
+            size += chunk.nbytes
+        return size
 
     def __iter__(self):
         for chunk in self.iterchunks():
@@ -156,12 +183,19 @@ cdef class ChunkedArray(_PandasConvertible):
         cdef:
             PyObject* out
             PandasOptions c_options = _convert_pandas_options(options)
+            ChunkedArray array
+
+        if self.type.id == _Type_TIMESTAMP and self.type.unit != 'ns':
+            # pandas only stores ns data - casting here is faster
+            array = self.cast(timestamp('ns'))
+        else:
+            array = self
 
         with nogil:
             check_status(libarrow.ConvertChunkedArrayToPandas(
                 c_options,
-                self.sp_chunked_array,
-                self, &out))
+                array.sp_chunked_array,
+                array, &out))
 
         result = pandas_api.series(wrap_array_output(out), name=self._name)
 
@@ -499,12 +533,28 @@ cdef class RecordBatch(_PandasConvertible):
     def __len__(self):
         return self.batch.num_rows()
 
-    def validate(self):
+    def validate(self, *, full=False):
         """
-        Validate RecordBatch consistency.
+        Perform validation checks.  An exception is raised if validation fails.
+
+        By default only cheap validation checks are run.  Pass `full=True`
+        for thorough validation checks (potentially O(n)).
+
+        Parameters
+        ----------
+        full: bool, default False
+            If True, run expensive checks, otherwise cheap checks only.
+
+        Raises
+        ------
+        ArrowInvalid
         """
-        with nogil:
-            check_status(self.batch.Validate())
+        if full:
+            with nogil:
+                check_status(self.batch.ValidateFull())
+        else:
+            with nogil:
+                check_status(self.batch.Validate())
 
     def replace_schema_metadata(self, metadata=None):
         """
@@ -580,7 +630,7 @@ cdef class RecordBatch(_PandasConvertible):
 
         Returns
         -------
-        list of pa.ChunkedArray
+        list of pa.Array
         """
         return [self.column(i) for i in range(self.num_columns)]
 
@@ -596,6 +646,16 @@ cdef class RecordBatch(_PandasConvertible):
         cdef Array result = pyarrow_wrap_array(self.batch.column(index))
         result._name = self.schema[index].name
         return result
+
+    @property
+    def nbytes(self):
+        """
+        Total number of bytes consumed by the elements of the record batch.
+        """
+        size = 0
+        for i in range(self.num_columns):
+            size += self.column(i).nbytes
+        return size
 
     def __getitem__(self, key):
         if isinstance(key, slice):
@@ -774,6 +834,29 @@ cdef class RecordBatch(_PandasConvertible):
         result.validate()
         return result
 
+    @staticmethod
+    def from_struct_array(StructArray struct_array):
+        """
+        Construct a RecordBatch from a StructArray.
+
+        Each field in the StructArray will become a column in the resulting
+        ``RecordBatch``.
+
+        Parameters
+        ----------
+        struct_array: a StructArray.
+
+        Returns
+        -------
+        pyarrow.RecordBatch
+        """
+        cdef:
+            shared_ptr[CRecordBatch] c_record_batch
+        with nogil:
+            check_status(CRecordBatch.FromStructArray(struct_array.sp_array,
+                                                      &c_record_batch))
+        return pyarrow_wrap_batch(c_record_batch)
+
 
 def _reconstruct_record_batch(columns, schema):
     """
@@ -830,12 +913,28 @@ cdef class Table(_PandasConvertible):
         self.sp_table = table
         self.table = table.get()
 
-    def validate(self):
+    def validate(self, *, full=False):
         """
-        Validate table consistency.
+        Perform validation checks.  An exception is raised if validation fails.
+
+        By default only cheap validation checks are run.  Pass `full=True`
+        for thorough validation checks (potentially O(n)).
+
+        Parameters
+        ----------
+        full: bool, default False
+            If True, run expensive checks, otherwise cheap checks only.
+
+        Raises
+        ------
+        ArrowInvalid
         """
-        with nogil:
-            check_status(self.table.Validate())
+        if full:
+            with nogil:
+                check_status(self.table.ValidateFull())
+        else:
+            with nogil:
+                check_status(self.table.Validate())
 
     def __reduce__(self):
         # Reduce the columns as ChunkedArrays to avoid serializing schema
@@ -1412,6 +1511,16 @@ cdef class Table(_PandasConvertible):
         """
         return (self.num_rows, self.num_columns)
 
+    @property
+    def nbytes(self):
+        """
+        Total number of bytes consumed by the elements of the table.
+        """
+        size = 0
+        for column in self.itercolumns():
+            size += column.nbytes
+        return size
+
     def add_column(self, int i, field_, column):
         """
         Add column to Table at position. Returns new table
@@ -1544,9 +1653,8 @@ def record_batch(data, names=None, schema=None, metadata=None):
 
     Parameters
     ----------
-    data : pandas.DataFrame, dict, list
-        A DataFrame, mapping of strings to Arrays or Python lists, or list of
-        arrays or chunked arrays
+    data : pandas.DataFrame, list
+        A DataFrame or list of arrays or chunked arrays.
     names : list, default None
         Column names if list of arrays passed as data. Mutually exclusive with
         'schema' argument
@@ -1562,7 +1670,7 @@ def record_batch(data, names=None, schema=None, metadata=None):
 
     See Also
     --------
-    RecordBatch.from_arrays, RecordBatch.from_pandas, Table.from_pydict
+    RecordBatch.from_arrays, RecordBatch.from_pandas, table
     """
     # accept schema as first argument for backwards compatibility / usability
     if isinstance(names, Schema) and schema is None:
@@ -1572,10 +1680,10 @@ def record_batch(data, names=None, schema=None, metadata=None):
     if isinstance(data, (list, tuple)):
         return RecordBatch.from_arrays(data, names=names, schema=schema,
                                        metadata=metadata)
-    elif isinstance(data, _pandas_api.pd.DataFrame):
+    elif _pandas_api.is_data_frame(data):
         return RecordBatch.from_pandas(data, schema=schema)
     else:
-        return TypeError("Expected pandas DataFrame or python dictionary")
+        raise TypeError("Expected pandas DataFrame or list of arrays")
 
 
 def table(data, names=None, schema=None, metadata=None):
@@ -1621,14 +1729,15 @@ def table(data, names=None, schema=None, metadata=None):
             raise ValueError(
                 "The 'names' argument is not valid when passing a dictionary")
         return Table.from_pydict(data, schema=schema, metadata=metadata)
-    elif isinstance(data, _pandas_api.pd.DataFrame):
+    elif _pandas_api.is_data_frame(data):
         if names is not None or metadata is not None:
             raise ValueError(
                 "The 'names' and 'metadata' arguments are not valid when "
                 "passing a pandas DataFrame")
         return Table.from_pandas(data, schema=schema)
     else:
-        return TypeError("Expected pandas DataFrame or python dictionary")
+        raise TypeError(
+            "Expected pandas DataFrame, python dictionary or list of arrays")
 
 
 def concat_tables(tables):

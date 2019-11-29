@@ -17,11 +17,7 @@
 
 add_custom_target(arrow_dataset)
 
-# Headers: top level
 arrow_install_all_headers("arrow/dataset")
-
-# pkg-config support
-arrow_add_pkg_config("arrow-dataset")
 
 set(ARROW_DATASET_SRCS
     dataset.cc
@@ -42,6 +38,10 @@ if(ARROW_PARQUET)
 endif()
 
 add_arrow_lib(arrow_dataset
+              CMAKE_PACKAGE_NAME
+              ArrowDataset
+              PKG_CONFIG_NAME
+              arrow-dataset
               OUTPUTS
               ARROW_DATASET_LIBRARIES
               SOURCES

@@ -31,7 +31,7 @@ test_that("read_table handles various input streams (ARROW-3450, ARROW-3505)", {
   bytes <- write_arrow(tab, raw())
 
   tab1 <- read_table(tf)
-  tab2 <- read_table(fs::path_abs(tf))
+  tab2 <- read_table(normalizePath(tf))
 
   readable_file <- ReadableFile$create(tf)
   file_reader1 <- RecordBatchFileReader$create(readable_file)
@@ -110,6 +110,10 @@ test_that("[, [[, $ for Table", {
   expect_data_frame(tab[ca,], tbl[c(1, 3, 4, 8, 9),])
   # int Array
   expect_data_frame(tab[Array$create(5:6), 2:4], tbl[6:7, 2:4])
+  # ChunkedArray
+  expect_data_frame(tab[ChunkedArray$create(5L, 6L), 2:4], tbl[6:7, 2:4])
+  # Expression
+  expect_data_frame(tab[tab$int > 6,], tbl[tbl$int > 6,])
 
   expect_vector(tab[["int"]], tbl$int)
   expect_vector(tab$int, tbl$int)

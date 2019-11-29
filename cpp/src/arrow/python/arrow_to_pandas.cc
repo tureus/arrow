@@ -1964,15 +1964,17 @@ class ArrowDeserializer {
                               std::is_base_of<DurationType, Type>::value,
                           Status>::type
   Visit(const Type& type) {
-    if (options_.zero_copy_only) {
-      return Status::Invalid("Copy Needed, but zero_copy_only was True");
-    }
-
     constexpr int TYPE = Type::type_id;
     using traits = internal::arrow_traits<TYPE>;
     using c_type = typename Type::c_type;
 
     typedef typename traits::T T;
+
+    if (data_->num_chunks() == 1 && data_->null_count() == 0) {
+      return ConvertValuesZeroCopy<TYPE>(options_, traits::npy_type, data_->chunk(0));
+    } else if (options_.zero_copy_only) {
+      return Status::Invalid("Copy Needed, but zero_copy_only was True");
+    }
 
     RETURN_NOT_OK(AllocateOutput(traits::npy_type));
     auto out_values = reinterpret_cast<T*>(PyArray_DATA(arr_));
@@ -2168,6 +2170,22 @@ class ArrowDeserializer {
     PyDict_SetItemString(result_, "ordered", py_ordered);
     RETURN_IF_PYERROR();
 
+    return Status::OK();
+  }
+
+  Status Visit(const ExtensionType& type) {
+    auto storage_type = type.storage_type();
+
+    ArrayVector out_chunks(data_->num_chunks());
+    for (int i = 0; i < data_->num_chunks(); i++) {
+      auto chunk = data_->chunk(i);
+      auto storage_data = checked_cast<const ExtensionArray&>(*chunk).storage();
+      out_chunks[i] = storage_data;
+    }
+
+    data_ = std::make_shared<ChunkedArray>(out_chunks);
+
+    RETURN_NOT_OK(VisitTypeInline(*data_->type(), this));
     return Status::OK();
   }
 

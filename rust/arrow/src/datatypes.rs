@@ -21,6 +21,7 @@
 //! information regarding data-types and memory layouts see
 //! [here](https://arrow.apache.org/docs/memory_layout.html).
 
+use std::collections::HashMap;
 use std::fmt;
 use std::mem::size_of;
 #[cfg(feature = "simd")]
@@ -67,8 +68,11 @@ pub enum DataType {
     Time32(TimeUnit),
     Time64(TimeUnit),
     Interval(IntervalUnit),
+    Binary,
+    FixedSizeBinary(i32),
     Utf8,
     List(Box<DataType>),
+    FixedSizeList((Box<DataType>, i32)),
     Struct(Vec<Field>),
 }
 
@@ -181,7 +185,8 @@ impl ArrowNativeType for u64 {
 
 impl ArrowNativeType for f32 {
     fn into_json_value(self) -> Option<Value> {
-        Number::from_f64(self as f64).map(|num| VNumber(num))
+        Number::from_f64(f64::round(self as f64 * 1000.0) / 1000.0)
+            .map(|num| VNumber(num))
     }
 }
 
@@ -534,7 +539,18 @@ impl DataType {
         match *json {
             Value::Object(ref map) => match map.get("name") {
                 Some(s) if s == "bool" => Ok(DataType::Boolean),
+                Some(s) if s == "binary" => Ok(DataType::Binary),
                 Some(s) if s == "utf8" => Ok(DataType::Utf8),
+                Some(s) if s == "fixedsizebinary" => {
+                    // return a list with any type as its child isn't defined in the map
+                    if let Some(Value::Number(size)) = map.get("byteWidth") {
+                        Ok(DataType::FixedSizeBinary(size.as_i64().unwrap() as i32))
+                    } else {
+                        Err(ArrowError::ParseError(format!(
+                            "Expecting a byteWidth for fixedsizebinary",
+                        )))
+                    }
+                }
                 Some(s) if s == "floatingpoint" => match map.get("precision") {
                     Some(p) if p == "HALF" => Ok(DataType::Float16),
                     Some(p) if p == "SINGLE" => Ok(DataType::Float32),
@@ -633,6 +649,19 @@ impl DataType {
                     // return a list with any type as its child isn't defined in the map
                     Ok(DataType::List(Box::new(DataType::Boolean)))
                 }
+                Some(s) if s == "fixedsizelist" => {
+                    // return a list with any type as its child isn't defined in the map
+                    if let Some(Value::Number(size)) = map.get("listSize") {
+                        Ok(DataType::FixedSizeList((
+                            Box::new(DataType::Boolean),
+                            size.as_i64().unwrap() as i32,
+                        )))
+                    } else {
+                        Err(ArrowError::ParseError(format!(
+                            "Expecting a listSize for fixedsizelist",
+                        )))
+                    }
+                }
                 Some(s) if s == "struct" => {
                     // return an empty `struct` type as its children aren't defined in the map
                     Ok(DataType::Struct(vec![]))
@@ -665,8 +694,15 @@ impl DataType {
             DataType::Float32 => json!({"name": "floatingpoint", "precision": "SINGLE"}),
             DataType::Float64 => json!({"name": "floatingpoint", "precision": "DOUBLE"}),
             DataType::Utf8 => json!({"name": "utf8"}),
+            DataType::Binary => json!({"name": "binary"}),
+            DataType::FixedSizeBinary(byte_width) => {
+                json!({"name": "fixedsizebinary", "byteWidth": byte_width})
+            }
             DataType::Struct(_) => json!({"name": "struct"}),
             DataType::List(_) => json!({ "name": "list"}),
+            DataType::FixedSizeList((_, length)) => {
+                json!({"name":"fixedsizelist", "listSize": length})
+            }
             DataType::Time32(unit) => {
                 json!({"name": "time", "bitWidth": 32, "unit": match unit {
                     TimeUnit::Second => "SECOND",
@@ -758,26 +794,41 @@ impl Field {
                 };
                 // if data_type is a struct or list, get its children
                 let data_type = match data_type {
-                    DataType::List(_) => match map.get("children") {
-                        Some(Value::Array(values)) => {
-                            if values.len() != 1 {
-                                return Err(ArrowError::ParseError(
+                    DataType::List(_) | DataType::FixedSizeList(_) => {
+                        match map.get("children") {
+                            Some(Value::Array(values)) => {
+                                if values.len() != 1 {
+                                    return Err(ArrowError::ParseError(
                                     "Field 'children' must have one element for a list data type".to_string(),
                                 ));
+                                }
+                                match data_type {
+                                    DataType::List(_) => DataType::List(Box::new(
+                                        Self::from(&values[0])?.data_type,
+                                    )),
+                                    DataType::FixedSizeList((_, int)) => {
+                                        DataType::FixedSizeList((
+                                            Box::new(Self::from(&values[0])?.data_type),
+                                            int,
+                                        ))
+                                    }
+                                    _ => unreachable!(
+                                        "Data type should be a list or fixedsizelist"
+                                    ),
+                                }
                             }
-                            DataType::List(Box::new(Self::from(&values[0])?.data_type))
+                            Some(_) => {
+                                return Err(ArrowError::ParseError(
+                                    "Field 'children' must be an array".to_string(),
+                                ))
+                            }
+                            None => {
+                                return Err(ArrowError::ParseError(
+                                    "Field missing 'children' attribute".to_string(),
+                                ));
+                            }
                         }
-                        Some(_) => {
-                            return Err(ArrowError::ParseError(
-                                "Field 'children' must be an array".to_string(),
-                            ))
-                        }
-                        None => {
-                            return Err(ArrowError::ParseError(
-                                "Field missing 'children' attribute".to_string(),
-                            ));
-                        }
-                    },
+                    }
                     DataType::Struct(mut fields) => match map.get("children") {
                         Some(Value::Array(values)) => {
                             let struct_fields: Result<Vec<Field>> =
@@ -818,6 +869,10 @@ impl Field {
                 let item = Field::new("item", *dtype.clone(), self.nullable);
                 vec![item.to_json()]
             }
+            DataType::FixedSizeList((dtype, _)) => {
+                let item = Field::new("item", *dtype.clone(), self.nullable);
+                vec![item.to_json()]
+            }
             _ => vec![],
         };
         json!({
@@ -847,12 +902,18 @@ impl fmt::Display for Field {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub(crate) fields: Vec<Field>,
+    /// A map of key-value pairs containing additional meta data.
+    #[serde(default)]
+    pub(crate) metadata: HashMap<String, String>,
 }
 
 impl Schema {
     /// Creates an empty `Schema`
     pub fn empty() -> Self {
-        Self { fields: vec![] }
+        Self {
+            fields: vec![],
+            metadata: HashMap::new(),
+        }
     }
 
     /// Creates a new `Schema` from a sequence of `Field` values
@@ -868,7 +929,30 @@ impl Schema {
     /// let schema = Schema::new(vec![field_a, field_b]);
     /// ```
     pub fn new(fields: Vec<Field>) -> Self {
-        Self { fields }
+        Self::new_with_metadata(fields, HashMap::new())
+    }
+    /// Creates a new `Schema` from a sequence of `Field` values
+    /// and adds additional metadata in form of key value pairs.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # extern crate arrow;
+    /// # use arrow::datatypes::{Field, DataType, Schema};
+    /// # use std::collections::HashMap;
+    /// let field_a = Field::new("a", DataType::Int64, false);
+    /// let field_b = Field::new("b", DataType::Boolean, false);
+    ///
+    /// let mut metadata: HashMap<String, String> = HashMap::new();
+    /// metadata.insert("row_count".to_string(), "100".to_string());
+    ///
+    /// let schema = Schema::new_with_metadata(vec![field_a, field_b], metadata);
+    /// ```
+    pub fn new_with_metadata(
+        fields: Vec<Field>,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        Self { fields, metadata }
     }
 
     /// Returns an immutable reference of the vector of `Field` instances
@@ -880,6 +964,11 @@ impl Schema {
     /// offset within the internal `fields` vector
     pub fn field(&self, i: usize) -> &Field {
         &self.fields[i]
+    }
+
+    /// Returns an immutable reference to the Map of custom metadata key-value pairs.
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
     }
 
     /// Look up a column by name and return a immutable reference to the column along with
@@ -895,6 +984,7 @@ impl Schema {
     pub fn to_json(&self) -> Value {
         json!({
             "fields": self.fields.iter().map(|field| field.to_json()).collect::<Vec<Value>>(),
+            "metadata": serde_json::to_value(&self.metadata).unwrap()
         })
     }
 
@@ -902,19 +992,49 @@ impl Schema {
     pub fn from(json: &Value) -> Result<Self> {
         match *json {
             Value::Object(ref schema) => {
-                if let Some(Value::Array(fields)) = schema.get("fields") {
-                    let fields: Result<Vec<Field>> =
-                        fields.iter().map(|f| Field::from(f)).collect();
-                    Ok(Schema::new(fields?))
+                let fields = if let Some(Value::Array(fields)) = schema.get("fields") {
+                    fields
+                        .iter()
+                        .map(|f| Field::from(f))
+                        .collect::<Result<_>>()?
                 } else {
                     return Err(ArrowError::ParseError(
                         "Schema fields should be an array".to_string(),
                     ));
-                }
+                };
+
+                let metadata = if let Some(value) = schema.get("metadata") {
+                    Self::from_metadata(value)?
+                } else {
+                    HashMap::default()
+                };
+
+                Ok(Self { fields, metadata })
             }
             _ => Err(ArrowError::ParseError(
                 "Invalid json value type for schema".to_string(),
             )),
+        }
+    }
+
+    /// Parse a `metadata` definition from a JSON representation
+    fn from_metadata(json: &Value) -> Result<HashMap<String, String>> {
+        if let Value::Object(md) = json {
+            md.iter()
+                .map(|(k, v)| {
+                    if let Value::String(v) = v {
+                        Ok((k.to_string(), v.to_string()))
+                    } else {
+                        Err(ArrowError::ParseError(
+                            "metadata `value` field must be a string".to_string(),
+                        ))
+                    }
+                })
+                .collect::<Result<_>>()
+        } else {
+            Err(ArrowError::ParseError(
+                "`metadata` field must be an object".to_string(),
+            ))
         }
     }
 }
@@ -1117,42 +1237,59 @@ mod tests {
 
     #[test]
     fn schema_json() {
-        let schema = Schema::new(vec![
-            Field::new("c1", DataType::Utf8, false),
-            Field::new("c2", DataType::Boolean, false),
-            Field::new("c3", DataType::Date32(DateUnit::Day), false),
-            Field::new("c4", DataType::Date64(DateUnit::Millisecond), false),
-            Field::new("c7", DataType::Time32(TimeUnit::Second), false),
-            Field::new("c8", DataType::Time32(TimeUnit::Millisecond), false),
-            Field::new("c9", DataType::Time32(TimeUnit::Microsecond), false),
-            Field::new("c10", DataType::Time32(TimeUnit::Nanosecond), false),
-            Field::new("c11", DataType::Time64(TimeUnit::Second), false),
-            Field::new("c12", DataType::Time64(TimeUnit::Millisecond), false),
-            Field::new("c13", DataType::Time64(TimeUnit::Microsecond), false),
-            Field::new("c14", DataType::Time64(TimeUnit::Nanosecond), false),
-            Field::new("c15", DataType::Timestamp(TimeUnit::Second), false),
-            Field::new("c16", DataType::Timestamp(TimeUnit::Millisecond), false),
-            Field::new("c17", DataType::Timestamp(TimeUnit::Microsecond), false),
-            Field::new("c18", DataType::Timestamp(TimeUnit::Nanosecond), false),
-            Field::new("c19", DataType::Interval(IntervalUnit::DayTime), false),
-            Field::new("c20", DataType::Interval(IntervalUnit::YearMonth), false),
-            Field::new("c21", DataType::List(Box::new(DataType::Boolean)), false),
-            Field::new(
-                "c22",
-                DataType::List(Box::new(DataType::List(Box::new(DataType::Struct(
-                    vec![],
-                ))))),
-                true,
-            ),
-            Field::new(
-                "c23",
-                DataType::Struct(vec![
-                    Field::new("a", DataType::Utf8, false),
-                    Field::new("b", DataType::UInt16, false),
-                ]),
-                false,
-            ),
-        ]);
+        // Add some custom metadata
+        let metadata: HashMap<String, String> =
+            [("Key".to_string(), "Value".to_string())]
+                .iter()
+                .cloned()
+                .collect();
+
+        let schema = Schema::new_with_metadata(
+            vec![
+                Field::new("c1", DataType::Utf8, false),
+                Field::new("c2", DataType::Binary, false),
+                Field::new("c3", DataType::FixedSizeBinary(3), false),
+                Field::new("c4", DataType::Boolean, false),
+                Field::new("c5", DataType::Date32(DateUnit::Day), false),
+                Field::new("c6", DataType::Date64(DateUnit::Millisecond), false),
+                Field::new("c7", DataType::Time32(TimeUnit::Second), false),
+                Field::new("c8", DataType::Time32(TimeUnit::Millisecond), false),
+                Field::new("c9", DataType::Time32(TimeUnit::Microsecond), false),
+                Field::new("c10", DataType::Time32(TimeUnit::Nanosecond), false),
+                Field::new("c11", DataType::Time64(TimeUnit::Second), false),
+                Field::new("c12", DataType::Time64(TimeUnit::Millisecond), false),
+                Field::new("c13", DataType::Time64(TimeUnit::Microsecond), false),
+                Field::new("c14", DataType::Time64(TimeUnit::Nanosecond), false),
+                Field::new("c15", DataType::Timestamp(TimeUnit::Second), false),
+                Field::new("c16", DataType::Timestamp(TimeUnit::Millisecond), false),
+                Field::new("c17", DataType::Timestamp(TimeUnit::Microsecond), false),
+                Field::new("c18", DataType::Timestamp(TimeUnit::Nanosecond), false),
+                Field::new("c19", DataType::Interval(IntervalUnit::DayTime), false),
+                Field::new("c20", DataType::Interval(IntervalUnit::YearMonth), false),
+                Field::new("c21", DataType::List(Box::new(DataType::Boolean)), false),
+                Field::new(
+                    "c22",
+                    DataType::FixedSizeList((Box::new(DataType::Boolean), 5)),
+                    false,
+                ),
+                Field::new(
+                    "c23",
+                    DataType::List(Box::new(DataType::List(Box::new(DataType::Struct(
+                        vec![],
+                    ))))),
+                    true,
+                ),
+                Field::new(
+                    "c24",
+                    DataType::Struct(vec![
+                        Field::new("a", DataType::Utf8, false),
+                        Field::new("b", DataType::UInt16, false),
+                    ]),
+                    false,
+                ),
+            ],
+            metadata,
+        );
 
         let expected = schema.to_json();
         let json = r#"{
@@ -1169,12 +1306,29 @@ mod tests {
                         "name": "c2",
                         "nullable": false,
                         "type": {
-                            "name": "bool"
+                            "name": "binary"
                         },
                         "children": []
                     },
                     {
                         "name": "c3",
+                        "nullable": false,
+                        "type": {
+                            "name": "fixedsizebinary",
+                            "byteWidth": 3
+                        },
+                        "children": []
+                    },
+                    {
+                        "name": "c4",
+                        "nullable": false,
+                        "type": {
+                            "name": "bool"
+                        },
+                        "children": []
+                    },
+                    {
+                        "name": "c5",
                         "nullable": false,
                         "type": {
                             "name": "date",
@@ -1183,7 +1337,7 @@ mod tests {
                         "children": []
                     },
                     {
-                        "name": "c4",
+                        "name": "c6",
                         "nullable": false,
                         "type": {
                             "name": "date",
@@ -1344,6 +1498,24 @@ mod tests {
                     },
                     {
                         "name": "c22",
+                        "nullable": false,
+                        "type": {
+                            "name": "fixedsizelist",
+                            "listSize": 5
+                        },
+                        "children": [
+                            {
+                                "name": "item",
+                                "nullable": false,
+                                "type": {
+                                    "name": "bool"
+                                },
+                                "children": []
+                            }
+                        ]
+                    },
+                    {
+                        "name": "c23",
                         "nullable": true,
                         "type": {
                             "name": "list"
@@ -1369,7 +1541,7 @@ mod tests {
                         ]
                     },
                     {
-                        "name": "c23",
+                        "name": "c24",
                         "nullable": false,
                         "type": {
                             "name": "struct"
@@ -1395,7 +1567,10 @@ mod tests {
                             }
                         ]
                     }
-                ]
+                ],
+                "metadata" : {
+                    "Key": "Value"
+                }
             }"#;
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(expected, value);
@@ -1405,6 +1580,41 @@ mod tests {
         let schema2 = Schema::from(&value).unwrap();
 
         assert_eq!(schema, schema2);
+
+        // Check that empty metadata produces empty value in JSON and can be parsed
+        let json = r#"{
+                "fields": [
+                    {
+                        "name": "c1",
+                        "nullable": false,
+                        "type": {
+                            "name": "utf8"
+                        },
+                        "children": []
+                    }
+                ],
+                "metadata": {}
+            }"#;
+        let value: Value = serde_json::from_str(&json).unwrap();
+        let schema = Schema::from(&value).unwrap();
+        assert!(schema.metadata.is_empty());
+
+        // Check that metadata field is not required in the JSON.
+        let json = r#"{
+                "fields": [
+                    {
+                        "name": "c1",
+                        "nullable": false,
+                        "type": {
+                            "name": "utf8"
+                        },
+                        "children": []
+                    }
+                ]
+            }"#;
+        let value: Value = serde_json::from_str(&json).unwrap();
+        let schema = Schema::from(&value).unwrap();
+        assert!(schema.metadata.is_empty());
     }
 
     #[test]

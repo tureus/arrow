@@ -25,6 +25,8 @@
 
 #include "arrow/array.h"
 #include "arrow/record_batch.h"
+#include "arrow/result.h"
+#include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/util/macros.h"
 #include "arrow/util/visibility.h"
@@ -104,8 +106,23 @@ class ARROW_EXPORT ChunkedArray {
   /// \brief Determine if two chunked arrays are equal.
   bool Equals(const std::shared_ptr<ChunkedArray>& other) const;
 
-  /// \brief Check that all chunks have the same data type
+  /// \brief Perform cheap validation checks to determine obvious inconsistencies
+  /// within the chunk array's internal data.
+  ///
+  /// This is O(k*m) where k is the number of array descendents,
+  /// and m is the number of chunks.
+  ///
+  /// \return Status
   Status Validate() const;
+
+  /// \brief Perform extensive validation checks to determine inconsistencies
+  /// within the chunk array's internal data.
+  ///
+  /// This is O(k*n) where k is the number of array descendents,
+  /// and n is the length in elements.
+  ///
+  /// \return Status
+  Status ValidateFull() const;
 
  protected:
   ArrayVector chunks_;
@@ -237,8 +254,23 @@ class ARROW_EXPORT Table {
   /// \param[out] out The returned table
   virtual Status Flatten(MemoryPool* pool, std::shared_ptr<Table>* out) const = 0;
 
-  /// \brief Perform any checks to validate the input arguments
+  /// \brief Perform cheap validation checks to determine obvious inconsistencies
+  /// within the table's schema and internal data.
+  ///
+  /// This is O(k*m) where k is the total number of field descendents,
+  /// and m is the number of chunks.
+  ///
+  /// \return Status
   virtual Status Validate() const = 0;
+
+  /// \brief Perform extensive validation checks to determine inconsistencies
+  /// within the table's schema and internal data.
+  ///
+  /// This is O(k*n) where k is the total number of field descendents,
+  /// and n is the number of rows.
+  ///
+  /// \return Status
+  virtual Status ValidateFull() const = 0;
 
   /// \brief Return the number of columns in the table
   int num_columns() const { return schema_->num_fields(); }
@@ -307,6 +339,45 @@ class ARROW_EXPORT TableBatchReader : public RecordBatchReader {
 ARROW_EXPORT
 Status ConcatenateTables(const std::vector<std::shared_ptr<Table>>& tables,
                          std::shared_ptr<Table>* table);
+
+/// \brief Promotes a table to conform to the given schema.
+///
+/// If a field in the schema does not have a corresponding column in the
+/// table, a column of nulls will be added to the resulting table.
+/// If the corresponding column is of type Null, it will be promoted to
+/// the type specified by schema, with null values filled.
+/// Returns an error:
+/// - if the corresponding column's type is not compatible with the
+///   schema.
+/// - if there is a column in the table that does not exist in the schema.
+///
+/// \param[in] table the input Table
+/// \param[in] schema the target schema to promote to
+/// \param[in] pool The memory pool to be used if null-filled arrays need to
+/// be created.
+ARROW_EXPORT
+Result<std::shared_ptr<Table>> PromoteTableToSchema(
+    const std::shared_ptr<Table>& table, const std::shared_ptr<Schema>& schema,
+    MemoryPool* pool = default_memory_pool());
+
+/// \brief Concatenate tables with null-filling and type promotion.
+///
+/// Columns of the same name will be concatenated. They should be of the
+/// same type, or be of type NULL, in which case it will be promoted to
+/// the type of other corresponding columns with null values filled.
+/// If a table is missing a particular field, null values of the appropriate
+//  type will be generated to take the place of the missing field
+/// The new schema will share the metadata with the first table. Each field in
+/// the new schema will share the metadata with the first table which has the
+/// field defined.
+///
+/// \param[in] tables the tables to be concatenated
+/// \param[in] pool The memory pool to be used if null-filled arrays need to
+/// be created.
+ARROW_EXPORT
+Result<std::shared_ptr<Table>> ConcatenateTablesWithPromotion(
+    const std::vector<std::shared_ptr<Table>>& tables,
+    MemoryPool* pool = default_memory_pool());
 
 }  // namespace arrow
 

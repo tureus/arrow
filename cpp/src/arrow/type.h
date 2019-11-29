@@ -359,6 +359,9 @@ class ARROW_EXPORT Field : public detail::Fingerprintable {
   /// \brief Return a copy of this field with the replaced name.
   std::shared_ptr<Field> WithName(const std::string& name) const;
 
+  /// \brief Return a copy of this field with the replaced nullability.
+  std::shared_ptr<Field> WithNullable(bool nullable) const;
+
   std::vector<std::shared_ptr<Field>> Flatten() const;
 
   bool Equals(const Field& other, bool check_metadata = true) const;
@@ -925,11 +928,13 @@ struct UnionMode {
 class ARROW_EXPORT UnionType : public NestedType {
  public:
   static constexpr Type::type type_id = Type::UNION;
+  static constexpr int8_t kMaxTypeId = 127;
+  static constexpr int kInvalidChildId = -1;
 
   static constexpr const char* type_name() { return "union"; }
 
   UnionType(const std::vector<std::shared_ptr<Field>>& fields,
-            const std::vector<uint8_t>& type_codes,
+            const std::vector<int8_t>& type_codes,
             UnionMode::type mode = UnionMode::SPARSE);
 
   DataTypeLayout layout() const override;
@@ -937,7 +942,14 @@ class ARROW_EXPORT UnionType : public NestedType {
   std::string ToString() const override;
   std::string name() const override { return "union"; }
 
-  const std::vector<uint8_t>& type_codes() const { return type_codes_; }
+  /// The array of logical type ids.
+  ///
+  /// For example, the first type in the union might be denoted by the id 5
+  /// (instead of 0).
+  const std::vector<int8_t>& type_codes() const { return type_codes_; }
+
+  /// An array mapping logical type ids to physical child ids.
+  const std::vector<int>& child_ids() const { return child_ids_; }
 
   uint8_t max_type_code() const;
 
@@ -948,10 +960,8 @@ class ARROW_EXPORT UnionType : public NestedType {
 
   UnionMode::type mode_;
 
-  // The type id used in the data to indicate each data type in the union. For
-  // example, the first type in the union might be denoted by the id 5 (instead
-  // of 0).
-  std::vector<uint8_t> type_codes_;
+  std::vector<int8_t> type_codes_;
+  std::vector<int> child_ids_;
 };
 
 // ----------------------------------------------------------------------
@@ -1303,7 +1313,9 @@ class ARROW_EXPORT DictionaryUnifier {
 /// \class Schema
 /// \brief Sequence of arrow::Field objects describing the columns of a record
 /// batch or table data structure
-class ARROW_EXPORT Schema : public detail::Fingerprintable {
+class ARROW_EXPORT Schema : public detail::Fingerprintable,
+                            public util::EqualityComparable<Schema>,
+                            public util::ToStringOstreamable<Schema> {
  public:
   explicit Schema(const std::vector<std::shared_ptr<Field>>& fields,
                   const std::shared_ptr<const KeyValueMetadata>& metadata = NULLPTR);
@@ -1317,7 +1329,6 @@ class ARROW_EXPORT Schema : public detail::Fingerprintable {
 
   /// Returns true if all of the schema fields are equal
   bool Equals(const Schema& other, bool check_metadata = true) const;
-  bool operator==(const Schema& other) const { return Equals(other); }
 
   /// \brief Return the number of fields (columns) in the schema
   int num_fields() const;
@@ -1462,13 +1473,21 @@ struct_(const std::vector<std::shared_ptr<Field>>& fields);
 /// \brief Create a UnionType instance
 std::shared_ptr<DataType> ARROW_EXPORT
 union_(const std::vector<std::shared_ptr<Field>>& child_fields,
-       const std::vector<uint8_t>& type_codes, UnionMode::type mode = UnionMode::SPARSE);
+       const std::vector<int8_t>& type_codes, UnionMode::type mode = UnionMode::SPARSE);
+
+/// \brief Create a UnionType instance
+std::shared_ptr<DataType> ARROW_EXPORT
+union_(const std::vector<std::shared_ptr<Field>>& child_fields,
+       UnionMode::type mode = UnionMode::SPARSE);
+
+/// \brief Create a UnionType instance
+std::shared_ptr<DataType> ARROW_EXPORT union_(UnionMode::type mode = UnionMode::SPARSE);
 
 /// \brief Create a UnionType instance
 std::shared_ptr<DataType> ARROW_EXPORT
 union_(const std::vector<std::shared_ptr<Array>>& children,
-       const std::vector<std::string>& field_names,
-       const std::vector<uint8_t>& type_codes, UnionMode::type mode = UnionMode::SPARSE);
+       const std::vector<std::string>& field_names, const std::vector<int8_t>& type_codes,
+       UnionMode::type mode = UnionMode::SPARSE);
 
 /// \brief Create a UnionType instance
 inline std::shared_ptr<DataType> ARROW_EXPORT
@@ -1534,6 +1553,24 @@ std::shared_ptr<Schema> schema(
     const std::shared_ptr<const KeyValueMetadata>& metadata = NULLPTR);
 
 /// @}
+
+/// \brief Unifies schemas by unifying fields by name and promoting Null fields.
+///
+/// The resulting schema will contain the union of fields from all schemas.
+/// Fields with the same name will be unified:
+/// - They are expected to be of the same type, or of Null type. The unified
+///   field will be of that same type.
+/// - The unified field will inherit the metadata from the schema where
+///   that field is first defined.
+/// - The first N fields in the schema will be ordered the same as the
+///   N fields in the first schema.
+/// The resulting schema will inherit its metadata from the first input schema.
+/// Returns an error if:
+/// - Any input schema contains fields with duplicate names.
+/// - Fields of the same name are of incompatible types.
+ARROW_EXPORT
+Result<std::shared_ptr<Schema>> UnifySchemas(
+    const std::vector<std::shared_ptr<Schema>>& schemas);
 
 }  // namespace arrow
 

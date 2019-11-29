@@ -100,7 +100,10 @@ Array <- R6Class("Array",
       if (is.integer(i)) {
         i <- Array$create(i)
       }
-      assert_is(i, "Array") # Support ChunkedArray too?
+      if (inherits(i, "ChunkedArray")) {
+        return(shared_ptr(ChunkedArray, Array__TakeChunked(self, i)))
+      }
+      assert_is(i, "Array")
       shared_ptr(Array, Array__Take(self, i))
     },
     Filter = function(i) {
@@ -186,9 +189,18 @@ filter_rows <- function(x, i, ...) {
   # General purpose function for [ row subsetting with R semantics
   # Based on the input for `i`, calls x$Filter, x$Slice, or x$Take
   nrows <- x$num_rows %||% x$length() # Depends on whether Array or Table-like
+  if (inherits(i, "array_expression")) {
+    # Evaluate it
+    i <- as.vector(i)
+  }
   if (is.logical(i)) {
-    i <- rep_len(i, nrows) # For R recycling behavior; consider vctrs::vec_recycle()
-    x$Filter(i)
+    if (isTRUE(i)) {
+      # Shortcut without doing any work
+      x
+    } else {
+      i <- rep_len(i, nrows) # For R recycling behavior; consider vctrs::vec_recycle()
+      x$Filter(i)
+    }
   } else if (is.numeric(i)) {
     if (all(i < 0)) {
       # in R, negative i means "everything but i"

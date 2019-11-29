@@ -272,6 +272,10 @@ Array__Take <- function(values, indices){
     .Call(`_arrow_Array__Take` , values, indices)
 }
 
+Array__TakeChunked <- function(values, indices){
+    .Call(`_arrow_Array__TakeChunked` , values, indices)
+}
+
 RecordBatch__Take <- function(batch, indices){
     .Call(`_arrow_RecordBatch__Take` , batch, indices)
 }
@@ -280,8 +284,16 @@ ChunkedArray__Take <- function(values, indices){
     .Call(`_arrow_ChunkedArray__Take` , values, indices)
 }
 
+ChunkedArray__TakeChunked <- function(values, indices){
+    .Call(`_arrow_ChunkedArray__TakeChunked` , values, indices)
+}
+
 Table__Take <- function(table, indices){
     .Call(`_arrow_Table__Take` , table, indices)
+}
+
+Table__TakeChunked <- function(table, indices){
+    .Call(`_arrow_Table__TakeChunked` , table, indices)
 }
 
 Array__Filter <- function(values, filter){
@@ -326,6 +338,66 @@ csv___TableReader__Make <- function(input, read_options, parse_options, convert_
 
 csv___TableReader__Read <- function(table_reader){
     .Call(`_arrow_csv___TableReader__Read` , table_reader)
+}
+
+dataset___FSDSDiscovery__Make <- function(fs, selector){
+    .Call(`_arrow_dataset___FSDSDiscovery__Make` , fs, selector)
+}
+
+dataset___DSDiscovery__Finish <- function(discovery){
+    .Call(`_arrow_dataset___DSDiscovery__Finish` , discovery)
+}
+
+dataset___DSDiscovery__Inspect <- function(discovery){
+    .Call(`_arrow_dataset___DSDiscovery__Inspect` , discovery)
+}
+
+dataset___DSDiscovery__SetPartitionScheme <- function(discovery, part){
+    invisible(.Call(`_arrow_dataset___DSDiscovery__SetPartitionScheme` , discovery, part))
+}
+
+dataset___SchemaPartitionScheme <- function(schm){
+    .Call(`_arrow_dataset___SchemaPartitionScheme` , schm)
+}
+
+dataset___HivePartitionScheme <- function(schm){
+    .Call(`_arrow_dataset___HivePartitionScheme` , schm)
+}
+
+dataset___Dataset__create <- function(sources, schm){
+    .Call(`_arrow_dataset___Dataset__create` , sources, schm)
+}
+
+dataset___Dataset__schema <- function(ds){
+    .Call(`_arrow_dataset___Dataset__schema` , ds)
+}
+
+dataset___Dataset__NewScan <- function(ds){
+    .Call(`_arrow_dataset___Dataset__NewScan` , ds)
+}
+
+dataset___ScannerBuilder__Project <- function(sb, cols){
+    invisible(.Call(`_arrow_dataset___ScannerBuilder__Project` , sb, cols))
+}
+
+dataset___ScannerBuilder__Filter <- function(sb, expr){
+    invisible(.Call(`_arrow_dataset___ScannerBuilder__Filter` , sb, expr))
+}
+
+dataset___ScannerBuilder__UseThreads <- function(sb, threads){
+    invisible(.Call(`_arrow_dataset___ScannerBuilder__UseThreads` , sb, threads))
+}
+
+dataset___ScannerBuilder__schema <- function(sb){
+    .Call(`_arrow_dataset___ScannerBuilder__schema` , sb)
+}
+
+dataset___ScannerBuilder__Finish <- function(sb){
+    .Call(`_arrow_dataset___ScannerBuilder__Finish` , sb)
+}
+
+dataset___Scanner__ToTable <- function(scanner){
+    .Call(`_arrow_dataset___Scanner__ToTable` , scanner)
 }
 
 shared_ptr_is_null <- function(xp){
@@ -522,6 +594,62 @@ ListType__value_field <- function(type){
 
 ListType__value_type <- function(type){
     .Call(`_arrow_ListType__value_type` , type)
+}
+
+dataset___expr__field_ref <- function(name){
+    .Call(`_arrow_dataset___expr__field_ref` , name)
+}
+
+dataset___expr__equal <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__equal` , lhs, rhs)
+}
+
+dataset___expr__not_equal <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__not_equal` , lhs, rhs)
+}
+
+dataset___expr__greater <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__greater` , lhs, rhs)
+}
+
+dataset___expr__greater_equal <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__greater_equal` , lhs, rhs)
+}
+
+dataset___expr__less <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__less` , lhs, rhs)
+}
+
+dataset___expr__less_equal <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__less_equal` , lhs, rhs)
+}
+
+dataset___expr__in <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__in` , lhs, rhs)
+}
+
+dataset___expr__and <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__and` , lhs, rhs)
+}
+
+dataset___expr__or <- function(lhs, rhs){
+    .Call(`_arrow_dataset___expr__or` , lhs, rhs)
+}
+
+dataset___expr__not <- function(lhs){
+    .Call(`_arrow_dataset___expr__not` , lhs)
+}
+
+dataset___expr__is_valid <- function(lhs){
+    .Call(`_arrow_dataset___expr__is_valid` , lhs)
+}
+
+dataset___expr__scalar <- function(x){
+    .Call(`_arrow_dataset___expr__scalar` , x)
+}
+
+dataset___expr__ToString <- function(x){
+    .Call(`_arrow_dataset___expr__ToString` , x)
 }
 
 ipc___feather___TableWriter__SetDescription <- function(writer, description){

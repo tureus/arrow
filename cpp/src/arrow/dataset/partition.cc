@@ -17,21 +17,22 @@
 
 #include "arrow/dataset/partition.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
 #include "arrow/dataset/filter.h"
 #include "arrow/dataset/scanner.h"
+#include "arrow/filesystem/filesystem.h"
 #include "arrow/filesystem/path_util.h"
 #include "arrow/scalar.h"
 #include "arrow/util/iterator.h"
-#include "arrow/util/stl.h"
 
 namespace arrow {
 namespace dataset {
 
-Result<std::shared_ptr<Expression>> ConvertPartitionKeys(
-    const std::vector<UnconvertedKey>& keys, const Schema& schema) {
+Result<ExpressionPtr> ConvertPartitionKeys(const std::vector<UnconvertedKey>& keys,
+                                           const Schema& schema) {
   ExpressionVector subexpressions;
 
   for (const auto& key : keys) {
@@ -48,21 +49,15 @@ Result<std::shared_ptr<Expression>> ConvertPartitionKeys(
   return and_(subexpressions);
 }
 
-Result<std::shared_ptr<Expression>> ConstantPartitionScheme::Parse(
-    const std::string& path) const {
+Result<ExpressionPtr> ConstantPartitionScheme::Parse(const std::string& path) const {
   return expression_;
 }
 
-Result<std::shared_ptr<Expression>> SchemaPartitionScheme::Parse(
-    const std::string& path) const {
+Result<ExpressionPtr> SchemaPartitionScheme::Parse(const std::string& path) const {
   auto segments = fs::internal::SplitAbstractPath(path);
-  if (static_cast<int>(segments.size()) < schema_->num_fields()) {
-    return Status::Invalid("path had too few segments (", segments.size(), ") to parse ",
-                           schema_->num_fields(), " fields");
-  }
-
-  std::vector<UnconvertedKey> keys(schema_->num_fields());
-  for (int i = 0; i < schema_->num_fields(); ++i) {
+  auto min = std::min(static_cast<int>(segments.size()), schema_->num_fields());
+  std::vector<UnconvertedKey> keys(min);
+  for (int i = 0; i < min; i++) {
     keys[i].name = schema_->field(i)->name();
     keys[i].value = std::move(segments[i]);
   }
@@ -85,9 +80,30 @@ std::vector<UnconvertedKey> HivePartitionScheme::GetUnconvertedKeys(
   return keys;
 }
 
-Result<std::shared_ptr<Expression>> HivePartitionScheme::Parse(
-    const std::string& path) const {
+Result<ExpressionPtr> HivePartitionScheme::Parse(const std::string& path) const {
   return ConvertPartitionKeys(GetUnconvertedKeys(path), *schema_);
+}
+
+Result<PathPartitions> ApplyPartitionScheme(const PartitionScheme& scheme,
+                                            std::vector<fs::FileStats> files,
+                                            PathPartitions* out) {
+  return ApplyPartitionScheme(scheme, "", std::move(files));
+}
+
+Result<PathPartitions> ApplyPartitionScheme(const PartitionScheme& scheme,
+                                            const std::string& base_dir,
+                                            std::vector<fs::FileStats> files) {
+  PathPartitions partitions;
+
+  for (const auto& file : files) {
+    if (file.path().substr(0, base_dir.size()) != base_dir) continue;
+    auto path = file.path().substr(base_dir.size());
+
+    ARROW_ASSIGN_OR_RAISE(auto partition, scheme.Parse(path));
+    partitions.emplace(std::move(path), std::move(partition));
+  }
+
+  return partitions;
 }
 
 }  // namespace dataset

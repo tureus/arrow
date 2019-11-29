@@ -79,7 +79,6 @@ On MSYS2:
      mingw-w64-${MSYSTEM_CARCH}-boost \
      mingw-w64-${MSYSTEM_CARCH}-brotli \
      mingw-w64-${MSYSTEM_CARCH}-cmake \
-     mingw-w64-${MSYSTEM_CARCH}-double-conversion \
      mingw-w64-${MSYSTEM_CARCH}-gcc \
      mingw-w64-${MSYSTEM_CARCH}-gflags \
      mingw-w64-${MSYSTEM_CARCH}-glog \
@@ -90,7 +89,6 @@ On MSYS2:
      mingw-w64-${MSYSTEM_CARCH}-rapidjson \
      mingw-w64-${MSYSTEM_CARCH}-snappy \
      mingw-w64-${MSYSTEM_CARCH}-thrift \
-     mingw-w64-${MSYSTEM_CARCH}-uriparser \
      mingw-w64-${MSYSTEM_CARCH}-zlib \
      mingw-w64-${MSYSTEM_CARCH}-zstd
 
@@ -212,7 +210,6 @@ The build system supports a number of third-party dependencies
 
   * ``BOOST``: for cross-platform support
   * ``BROTLI``: for data compression
-  * ``double-conversion``: for text-to-numeric conversions
   * ``Snappy``: for data compression
   * ``gflags``: for command line utilities (formerly Googleflags)
   * ``glog``: for logging
@@ -940,7 +937,9 @@ Apache Parquet Development
 ==========================
 
 To build the C++ libraries for Apache Parquet, add the flag
-``-DARROW_PARQUET=ON`` when invoking CMake. The Parquet libraries and unit tests
+``-DARROW_PARQUET=ON`` when invoking CMake.
+To build Apache Parquet with encryption support, add the flag
+``-DPARQUET_REQUIRE_ENCRYPTION=ON`` when invoking CMake. The Parquet libraries and unit tests
 can be built with the ``parquet`` make target:
 
 .. code-block:: shell

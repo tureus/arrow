@@ -27,6 +27,17 @@ string(REGEX MATCH "^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)" VERSION ${PARQUET_VERS
 if(NOT VERSION)
   message(FATAL_ERROR "invalid .parquetcppversion")
 endif()
+set(PARQUET_VERSION "${PARQUET_VERSION}" PARENT_SCOPE)
+
+string(REGEX
+       REPLACE "^([0-9]+)\.[0-9]+\.[0-9]+(-.+)?$" "\\1" PARQUET_VERSION_MAJOR
+               "${PARQUET_VERSION}")
+string(REGEX
+       REPLACE "^[0-9]+\.([0-9]+)\.[0-9]+(-.+)?$" "\\1" PARQUET_VERSION_MINOR
+               "${PARQUET_VERSION}")
+string(REGEX
+       REPLACE "^[0-9]+\.[0-9]+\.([0-9]+)(-.+)?$" "\\1" PARQUET_VERSION_PATCH
+               "${PARQUET_VERSION}")
 
 function(ADD_PARQUET_TEST REL_TEST_NAME)
   set(one_value_args)
@@ -91,7 +102,7 @@ endif()
 
 set(PARQUET_BOOST_LINK_LIBS)
 
-if("${COMPILER_FAMILY}" STREQUAL "gcc" AND "${COMPILER_VERSION}" VERSION_LESS "4.9")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.9")
   add_definitions(-DPARQUET_USE_BOOST_REGEX)
   list(APPEND PARQUET_BOOST_LINK_LIBS ${BOOST_REGEX_LIBRARY})
 endif()
@@ -155,8 +166,11 @@ set(PARQUET_SRCS
     column_writer.cc
     deprecated_io.cc
     encoding.cc
+    encryption.cc
     file_reader.cc
     file_writer.cc
+    internal_file_decryptor.cc
+    internal_file_encryptor.cc
     metadata.cc
     murmur3.cc
     parquet_constants.cpp
@@ -166,7 +180,15 @@ set(PARQUET_SRCS
     properties.cc
     schema.cc
     statistics.cc
+    stream_reader.cc
+    stream_writer.cc
     types.cc)
+
+if(PARQUET_REQUIRE_ENCRYPTION)
+  set(PARQUET_SRCS ${PARQUET_SRCS} encryption_internal.cc)
+else()
+  set(PARQUET_SRCS ${PARQUET_SRCS} encryption_internal_nossl.cc)
+endif()
 
 # Ensure that thrift compilation is done before using its generated headers
 # in parquet code.
@@ -207,6 +229,10 @@ if(NOT APPLE AND NOT MSVC)
 endif()
 
 add_arrow_lib(parquet
+              CMAKE_PACKAGE_NAME
+              Parquet
+              PKG_CONFIG_NAME
+              parquet
               SOURCES
               ${PARQUET_SRCS}
               OUTPUTS
@@ -272,9 +298,6 @@ configure_file(parquet_version.h.in "${CMAKE_CURRENT_BINARY_DIR}/parquet_version
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/parquet_version.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/parquet")
 
-# pkg-config support
-arrow_add_pkg_config("parquet")
-
 add_parquet_test(internals-test
                  SOURCES
                  bloom_filter_test.cc
@@ -292,12 +315,14 @@ add_parquet_test(reader_test
                  column_reader_test.cc
                  column_scanner_test.cc
                  reader_test.cc
+                 stream_reader_test.cc
                  test_util.cc)
 
 add_parquet_test(writer-test
                  SOURCES
                  column_writer_test.cc
                  file_serialize_test.cc
+                 stream_writer_test.cc
                  test_util.cc)
 
 add_parquet_test(arrow-test
@@ -305,6 +330,15 @@ add_parquet_test(arrow-test
                  arrow/arrow_reader_writer_test.cc
                  arrow/arrow_schema_test.cc
                  test_util.cc)
+
+if(PARQUET_REQUIRE_ENCRYPTION)
+  add_parquet_test(encryption-test
+                   SOURCES
+                   encryption_write_configurations_test.cc
+                   encryption_read_configurations_test.cc
+                   encryption_properties_test.cc
+                   test_util.cc)
+endif()
 
 # Those tests need to use static linking as they access thrift-generated
 # symbols which are not exported by parquet.dll on Windows (PARQUET-1420).
@@ -315,7 +349,26 @@ add_parquet_benchmark(column_io_benchmark)
 add_parquet_benchmark(encoding_benchmark)
 add_parquet_benchmark(arrow/reader_writer_benchmark PREFIX "parquet-arrow")
 
-# Required for tests, the ExternalProject for zstd does not build on CMake < 3.7
+if(ARROW_WITH_BROTLI)
+  add_definitions(-DARROW_WITH_BROTLI)
+endif()
+
+if(ARROW_WITH_BZ2)
+  add_definitions(-DARROW_WITH_BZ2)
+endif()
+
+if(ARROW_WITH_LZ4)
+  add_definitions(-DARROW_WITH_LZ4)
+endif()
+
+if(ARROW_WITH_SNAPPY)
+  add_definitions(-DARROW_WITH_SNAPPY)
+endif()
+
+if(ARROW_WITH_ZLIB)
+  add_definitions(-DARROW_WITH_ZLIB)
+endif()
+
 if(ARROW_WITH_ZSTD)
   add_definitions(-DARROW_WITH_ZSTD)
 endif()

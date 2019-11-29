@@ -22,4 +22,5 @@ members = [
         "parquet_derive",
         "parquet_derive_test",
         "datafusion",
+        "arrow-flight",
 ]

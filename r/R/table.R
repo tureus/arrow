@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+#' @include record-batch.R
 #' @title Table class
 #' @description A Table is a sequence of [chunked arrays][ChunkedArray]. They
 #' have a similar interface to [record batches][RecordBatch], but they can be
@@ -138,13 +139,16 @@ Table <- R6Class("Table", inherit = Object,
       }
     },
     Take = function(i) {
-      if (inherits(i, c("Array", "ChunkedArray"))) {
-        # Hack because ChunkedArray__Take doesn't take Arrays
-        i <- as.vector(i)
-      } else if (is.numeric(i)) {
+      if (is.numeric(i)) {
         i <- as.integer(i)
       }
-      assert_is(i, "integer")
+      if (is.integer(i)) {
+        i <- Array$create(i)
+      }
+      if (inherits(i, "ChunkedArray")) {
+        return(shared_ptr(Table, Table__TakeChunked(self, i)))
+      }
+      assert_is(i, "Array")
       shared_ptr(Table, Table__Take(self, i))
     },
     Filter = function(i) {

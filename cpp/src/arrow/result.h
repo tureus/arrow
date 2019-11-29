@@ -286,7 +286,7 @@ class Result : public util::EqualityComparable<Result<T>> {
     variant_ = "Object already returned with ValueOrDie";
     return tmp;
   }
-  T operator*() && { return ValueOrDie(); }
+  T operator*() && { return std::move(*this).ValueOrDie(); }
 
   /// Helper method for using Results in Status returning out arg functions
   template <typename U, typename E = typename std::enable_if<
@@ -338,6 +338,9 @@ class Result : public util::EqualityComparable<Result<T>> {
 
 // Executes an expression that returns a Result, extracting its value
 // into the variable defined by lhs (or returning on error).
+//
+// Example: Assigning to a new value
+//   ARROW_ASSIGN_OR_RAISE(auto value, MaybeGetValue(arg));
 //
 // Example: Assigning to an existing value
 //   ValueType value;
