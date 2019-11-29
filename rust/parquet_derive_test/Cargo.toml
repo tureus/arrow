@@ -24,3 +24,5 @@ edition = "2018"
 [dependencies]
 parquet = {path = "../parquet"}
 parquet_derive = {path = "../parquet_derive"}
+chrono = "0"
+uuid = "0"

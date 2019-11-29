@@ -109,8 +109,8 @@ mod tests {
 
     #[test]
     fn test_parquet_derive_schema() {
-        #[derive(ParquetRecordSchema)]
         #[allow(dead_code)]
+        #[derive(ParquetRecordSchema)]
         struct ParquetRecord<'a> {
             is_true: bool,
             name: String,
@@ -119,6 +119,9 @@ mod tests {
             age_f: f32,
             age_ff: f64,
             optional_name: Option<String>,
+            a_timestamp: chrono::NaiveDateTime,
+            a_date: chrono::NaiveDate,
+            an_id: uuid::Uuid,
         }
 
         use crate::parquet::basic::Repetition;
@@ -153,6 +156,18 @@ mod tests {
                 .unwrap(),
             PrimitiveTypeBuilder::new("optional_name", parquet::basic::Type::BYTE_ARRAY)
                 .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("a_timestamp", parquet::basic::Type::INT64)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("a_date", parquet::basic::Type::INT32)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+            PrimitiveTypeBuilder::new("an_id", parquet::basic::Type::BYTE_ARRAY)
+                .with_repetition(Repetition::REQUIRED)
                 .build()
                 .unwrap(),
         ]
