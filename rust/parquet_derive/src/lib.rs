@@ -139,7 +139,12 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
         .map(|f: &syn::Field| parquet_field::Field::from(f))
         .collect();
 
-    //    panic!("field_infos: {:#?}", field_infos);
+    //    panic!(
+    //        "{:#?}\n\n\n{}\n\n\n{}",
+    //        field_infos.last().unwrap(),
+    //        field_infos.last().unwrap().last_part(),
+    //        field_infos.last().unwrap().last_part() == "Uuid"
+    //    );
 
     use parquet::basic::Type;
     let physical_types: Vec<_> = field_infos
@@ -168,6 +173,21 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
             }
             Type::FIXED_LEN_BYTE_ARRAY => {
                 quote! { parquet::basic::Type::FIXED_LEN_BYTE_ARRAY }
+            }
+        })
+        .collect();
+
+    let logical_types: Vec<Option<proc_macro2::TokenStream>> = field_infos
+        .iter()
+        .map(|f| {
+            if f.last_part() == "str" || f.last_part() == "String" || f.last_part() == "Uuid" {
+                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::UTF8) })
+            } else if f.last_part() == "NaiveDateTime" {
+                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::TIMESTAMP_MILLIS) })
+            } else if f.last_part() == "NaiveDate" {
+                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::DATE) })
+            } else {
+                None
             }
         })
         .collect();
@@ -202,6 +222,7 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
                         #physical_types
                     )
                     .with_repetition(#repetition_levels)
+                    #logical_types
                     .build()
                     .expect("schema builder failed on a type")
                 )

@@ -222,6 +222,10 @@ impl Field {
         }
     }
 
+    pub fn last_part(&self) -> String {
+        self.ty.last_part()
+    }
+
     fn option_into_vals(&self) -> proc_macro2::TokenStream {
         let field_name = &self.ident;
         let is_a_byte_buf = self.is_a_byte_buf;
