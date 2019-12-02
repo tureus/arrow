@@ -181,11 +181,11 @@ pub fn parquet_record_schema(input: proc_macro::TokenStream) -> proc_macro::Toke
         .iter()
         .map(|f| {
             if f.last_part() == "str" || f.last_part() == "String" || f.last_part() == "Uuid" {
-                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::UTF8) })
+                Some(quote!{ .with_logical_type(parquet::basic::LogicalType::UTF8) })
             } else if f.last_part() == "NaiveDateTime" {
-                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::TIMESTAMP_MILLIS) })
+                Some(quote!{ .with_logical_type(parquet::basic::LogicalType::TIMESTAMP_MILLIS) })
             } else if f.last_part() == "NaiveDate" {
-                Some(quote!{ .with_logical_type(crate::parquet::basic::LogicalType::DATE) })
+                Some(quote!{ .with_logical_type(parquet::basic::LogicalType::DATE) })
             } else {
                 None
             }

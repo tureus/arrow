@@ -124,6 +124,7 @@ mod tests {
             an_id: uuid::Uuid,
         }
 
+        use crate::parquet::basic::LogicalType;
         use crate::parquet::basic::Repetition;
         use crate::parquet::schema::types::{GroupTypeBuilder, PrimitiveTypeBuilder};
 
@@ -136,10 +137,12 @@ mod tests {
                 .unwrap(),
             PrimitiveTypeBuilder::new("name", parquet::basic::Type::BYTE_ARRAY)
                 .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(LogicalType::UTF8)
                 .build()
                 .unwrap(),
             PrimitiveTypeBuilder::new("str_name", parquet::basic::Type::BYTE_ARRAY)
                 .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(LogicalType::UTF8)
                 .build()
                 .unwrap(),
             PrimitiveTypeBuilder::new("age", parquet::basic::Type::INT64)
@@ -156,22 +159,26 @@ mod tests {
                 .unwrap(),
             PrimitiveTypeBuilder::new("optional_name", parquet::basic::Type::BYTE_ARRAY)
                 .with_repetition(Repetition::OPTIONAL)
+                .with_logical_type(LogicalType::UTF8)
                 .build()
                 .unwrap(),
             PrimitiveTypeBuilder::new("a_timestamp", parquet::basic::Type::INT64)
                 .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(LogicalType::TIMESTAMP_MILLIS)
                 .build()
                 .unwrap(),
             PrimitiveTypeBuilder::new("a_date", parquet::basic::Type::INT32)
                 .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(LogicalType::DATE)
                 .build()
                 .unwrap(),
             PrimitiveTypeBuilder::new("an_id", parquet::basic::Type::BYTE_ARRAY)
                 .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(LogicalType::UTF8)
                 .build()
                 .unwrap(),
         ]
-        .into_iter()
+        .iter()
         .map(|x| Rc::new(x.clone()))
         .collect();
         let group_type = GroupTypeBuilder::new("schema".into())
@@ -180,6 +187,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(ParquetRecord::schema(), group_type);
+
+        let handmade_schema = r#"message schema {
+            REQUIRED BOOLEAN is_true;
+            REQUIRED BINARY name (UTF8);
+            REQUIRED BYTE_ARRAY str_name (UTF8);
+            REQUIRED INT64  age;
+            REQUIRED FLOAT age_f;
+            REQUIRED DOUBLE age_ff;
+            OPTIONAL BINARY optional_name (UTF8);
+            REQUIRED INT64 a_timestamp (TIMESTAMP_MILLIS);
+            REQUIRED INT32 a_date (DATE);
+            REQUIRED BINARY an_id (UTF8);
+        }"#;
+        let parsed_schema = parse_message_type(handmade_schema).unwrap();
+        assert_eq!(ParquetRecord::schema(), parsed_schema);
     }
 
     /// Returns file handle for a temp file in 'target' directory with a provided content
