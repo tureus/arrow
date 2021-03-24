@@ -74,6 +74,8 @@ pub trait FileWriter {
     /// Can be called multiple times. It is up to implementation to either result in
     /// no-op, or return an `Err` for subsequent calls.
     fn close(&mut self) -> Result<()>;
+
+    fn total_num_rows(&mut self) -> &i64;
 }
 
 /// Parquet row group writer API.
@@ -109,6 +111,8 @@ pub trait RowGroupWriter {
     /// Can be called multiple times. In subsequent calls will result in no-op and return
     /// already created row group metadata.
     fn close(&mut self) -> Result<RowGroupMetaDataPtr>;
+
+    fn total_rows_written(&mut self) -> &Option<u64>;
 }
 
 // ----------------------------------------------------------------------
@@ -251,6 +255,10 @@ impl<W: 'static + ParquetWriter> FileWriter for SerializedFileWriter<W> {
         self.is_closed = true;
         Ok(())
     }
+
+    fn total_num_rows(&mut self) -> &i64 {
+        &self.total_num_rows
+    }
 }
 
 /// A serialized implementation for Parquet [`RowGroupWriter`].
@@ -383,6 +391,10 @@ impl<W: 'static + ParquetWriter> RowGroupWriter for SerializedRowGroupWriter<W> 
 
         let metadata = self.row_group_metadata.as_ref().unwrap().clone();
         Ok(metadata)
+    }
+
+    fn total_rows_written(&mut self) -> &Option<u64> {
+        &self.total_rows_written
     }
 }
 
@@ -766,6 +778,26 @@ mod tests {
         test_page_roundtrip(&pages[..], Compression::SNAPPY, Type::INT32);
         test_page_roundtrip(&pages[..], Compression::UNCOMPRESSED, Type::INT32);
     }
+
+    #[test]
+    fn test_file_writer_rows_number() {
+        let file = get_temp_file("test_file_writer_rows_number", &[]);
+        let schema = Rc::new(types::Type::group_type_builder("schema").build().unwrap());
+        let props = Rc::new(WriterProperties::builder().build());
+        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        assert_eq!(writer.total_num_rows(), &(0 as i64));
+    }
+
+    #[test]
+    fn test_file_total_rows_written()  {
+        let file = get_temp_file("test_file_total_rows_written", &[]);
+        let schema = Rc::new(types::Type::group_type_builder("schema").build().unwrap());
+        let props = Rc::new(WriterProperties::builder().build());
+        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut row_group_writer = writer.next_row_group().unwrap();
+        assert_eq!(row_group_writer.total_rows_written(), &Some(0 as u64));
+    }
+
 
     /// Tests writing and reading pages.
     /// Physical type is for statistics only, should match any defined statistics type in
